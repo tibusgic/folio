@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en" class="dark" id="html-root">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy-First PDF Toolkit</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f0f5ff',
+                            100: '#e5edff',
+                            200: '#cddbfe',
+                            300: '#b4c6fc',
+                            400: '#8da2fb',
+                            500: '#6875f5',
+                            600: '#5850ec',
+                            700: '#5145cd',
+                            800: '#42389d',
+                            900: '#362f78',
+                        },
+                        dark: {
+                            bg: '#0f111a',
+                            surface: '#1e2130',
+                            border: '#2d3142'
+                        }
+                    },
+                    animation: {
+                        'blob': 'blob 7s infinite',
+                        'fade-in': 'fadeIn 0.5s ease-out forwards',
+                    },
+                    keyframes: {
+                        blob: {
+                            '0%': { transform: 'translate(0px, 0px) scale(1)' },
+                            '33%': { transform: 'translate(30px, -50px) scale(1.1)' },
+                            '66%': { transform: 'translate(-20px, 20px) scale(0.9)' },
+                            '100%': { transform: 'translate(0px, 0px) scale(1)' },
+                        },
+                        fadeIn: {
+                            '0%': { opacity: '0', transform: 'translateY(10px)' },
+                            '100%': { opacity: '1', transform: 'translateY(0)' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- SortableJS -->
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+    <!-- PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body
+    class="bg-gray-50 text-gray-900 dark:bg-dark-bg dark:text-gray-100 min-h-screen relative overflow-hidden font-sans antialiased selection:bg-brand-500 selection:text-gray-900 dark:text-white transition-colors duration-300">
+
+    <!-- Background Blobs -->
+    <div class="fixed inset-0 w-full h-full pointer-events-none z-0 overflow-hidden">
+        <div
+            class="absolute top-[-10%] left-[-10%] w-96 h-96 bg-brand-600/30 rounded-full mix-blend-screen filter blur-[100px] animate-blob">
+        </div>
+        <div
+            class="absolute top-[20%] right-[-5%] w-96 h-96 bg-pink-600/20 rounded-full mix-blend-screen filter blur-[100px] animate-blob animation-delay-2000">
+        </div>
+        <div
+            class="absolute bottom-[-20%] left-[20%] w-[30rem] h-[30rem] bg-indigo-600/20 rounded-full mix-blend-screen filter blur-[100px] animate-blob animation-delay-4000">
+        </div>
+    </div>
+
+    <div class="relative z-10 flex flex-col md:flex-row h-screen max-w-7xl mx-auto p-2 md:p-4 gap-4 md:gap-6">
+
+        <!-- Sidebar Navigation -->
+        <aside class="w-full md:w-64 shrink-0 glass-panel rounded-2xl flex flex-col p-4 md:p-6 animate-fade-in"
+            style="animation-delay: 0.1s;">
+            <div class="flex items-center gap-3 mb-4 md:mb-10">
+                <div
+                    class="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center shadow-lg shadow-brand-500/30">
+                    <i class="ph ph-shield-check text-2xl text-gray-900 dark:text-white"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-gray-900 to-gray-500 dark:from-white dark:to-gray-400">
+                        PDF Toolkit</h1>
+                    <p class="text-xs text-gray-500 dark:text-gray-500 dark:text-gray-400 font-medium hidden md:block">100% Local Processing</p>
+                </div>
+            </div>
+
+            <nav class="flex md:flex-col overflow-x-auto md:overflow-visible gap-2 md:gap-0 md:space-y-2 pb-2 md:pb-0 hide-scrollbar"
+                id="nav-tabs">
+                <button data-target="merge-tab"
+                    class="nav-btn active shrink-0 w-auto md:w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all duration-300 hover:bg-gray-100 dark:bg-white/5 text-brand-300 bg-brand-500/10 shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)]">
+                    <i class="ph ph-files text-xl"></i>
+                    <span class="font-medium">Merge PDFs</span>
+                </button>
+                <button data-target="split-tab"
+                    class="nav-btn shrink-0 w-auto md:w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all duration-300 hover:bg-gray-100 dark:bg-white/5 text-gray-500 dark:text-gray-400">
+                    <i class="ph ph-scissors text-xl"></i>
+                    <span class="font-medium">Split / Extract</span>
+                </button>
+                <button data-target="compress-tab"
+                    class="nav-btn shrink-0 w-auto md:w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all duration-300 hover:bg-gray-100 dark:bg-white/5 text-gray-500 dark:text-gray-400">
+                    <i class="ph ph-arrows-in text-xl"></i>
+                    <span class="font-medium">Compress</span>
+                </button>
+                <button data-target="protect-tab"
+                    class="nav-btn shrink-0 w-auto md:w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all duration-300 hover:bg-gray-100 dark:bg-white/5 text-gray-500 dark:text-gray-400">
+                    <i class="ph ph-lock-key text-xl"></i>
+                    <span class="font-medium">Protect</span>
+                </button>
+                <button data-target="unlock-tab"
+                    class="nav-btn shrink-0 w-auto md:w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all duration-300 hover:bg-gray-100 dark:bg-white/5 text-gray-500 dark:text-gray-400">
+                    <i class="ph ph-lock-key-open text-xl"></i>
+                    <span class="font-medium">Unlock</span>
+                </button>
+                <button data-target="watermark-tab"
+                    class="nav-btn shrink-0 w-auto md:w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all duration-300 hover:bg-gray-100 dark:bg-white/5 text-gray-500 dark:text-gray-400">
+                    <i class="ph ph-drop text-xl"></i>
+                    <span class="font-medium">Watermark</span>
+                </button>
+            </nav>
+
+            <div class="mt-auto pt-6 flex flex-col gap-4 border-t border-gray-200 dark:border-gray-200 dark:border-white/10 hidden md:flex">
+                <button id="theme-toggle" class="flex items-center gap-3 px-4 py-2 rounded-xl text-left transition-all duration-300 hover:bg-gray-100 dark:hover:bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-500 dark:text-gray-400">
+                    <i class="ph ph-moon text-xl dark:hidden block"></i>
+                    <i class="ph ph-sun text-xl hidden dark:block"></i>
+                    <span class="font-medium dark:hidden block">Dark Mode</span>
+                    <span class="font-medium hidden dark:block">Light Mode</span>
+                </button>
+                <p class="text-xs text-center text-gray-500">Files are processed in RAM and deleted immediately.</p>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="flex-1 glass-panel rounded-2xl flex flex-col relative overflow-hidden animate-fade-in"
+            style="animation-delay: 0.2s;">
+            <!-- Loading Overlay -->
+            <div id="loading-overlay"
+                class="absolute inset-0 z-50 bg-white/80 dark:bg-dark-bg/80 backdrop-blur-sm hidden flex-col items-center justify-center transition-opacity duration-300 opacity-0">
+                <div class="flex flex-col items-center justify-center text-center w-full max-w-md">
+                    <div class="relative w-20 h-20 mb-6 mx-auto">
+                        <div class="absolute inset-0 rounded-full border-t-2 border-brand-500 animate-spin"></div>
+                        <div class="absolute inset-2 rounded-full border-r-2 border-pink-500 animate-spin"
+                            style="animation-direction: reverse; animation-duration: 1.5s;"></div>
+                        <div class="absolute inset-4 rounded-full border-b-2 border-indigo-400 animate-spin"></div>
+                    </div>
+                    <p id="loading-text" class="font-medium text-brand-500 dark:text-brand-300 tracking-wide animate-pulse text-center">Processing File...</p>
+                    <div class="progress-bar-container w-full max-w-[300px] mt-4 mx-auto">
+                        <div id="loading-progress" class="progress-bar-fill"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab Contents -->
+            <div class="p-10 flex-1 overflow-y-auto">
+
+                <!-- Merge Tab -->
+                <div id="merge-tab" class="tab-content block animate-fade-in">
+                    <header class="mb-10">
+                        <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">Merge PDFs</h2>
+                        <p class="text-gray-500 dark:text-gray-400">Combine multiple PDF files into a single document.</p>
+                    </header>
+                    <form action="/api/merge" method="POST" onsubmit="handleFormSubmit(event)">
+                        <div class="drop-zone border-2 border-dashed border-gray-200 dark:border-white/10 rounded-2xl p-10 flex flex-col items-center justify-center transition-all duration-300 hover:border-brand-500/50 hover:bg-brand-500/5 group cursor-pointer mb-6"
+                            onclick="document.getElementById('merge-files').click()">
+                            <div
+                                class="w-16 h-16 rounded-full bg-gray-100 dark:bg-white/5 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:bg-brand-500/20 transition-transform duration-300">
+                                <i
+                                    class="ph ph-upload-simple text-3xl text-gray-500 dark:text-gray-400 group-hover:text-brand-400 transition-colors"></i>
+                            </div>
+                            <p class="text-lg font-medium text-gray-800 dark:text-gray-200 mb-1">Click or drag files here</p>
+                            <p class="text-sm text-gray-500">Max 50MB total</p>
+                            <input type="file" id="merge-files" name="files" multiple accept=".pdf"
+                                class="hidden file-input">
+                        </div>
+                        <input type="hidden" id="pages_config" name="pages_config" value="[]">
+                        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 empty:hidden mb-6" id="merge-thumbnail-grid"></div>
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Output Filename
+                                (Optional)</label>
+                            <input type="text" name="output_filename" placeholder="e.g. custom_merged.pdf"
+                                class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                        </div>
+                        <button type="submit"
+                            class="w-full py-4 rounded-xl font-semibold text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 shadow-lg shadow-brand-500/25 transition-all duration-300 hover:-translate-y-1 transform disabled:opacity-50 disabled:cursor-not-allowed">
+                            Merge Files
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Split Tab -->
+                <div id="split-tab" class="tab-content hidden animate-fade-in">
+                    <header class="mb-10">
+                        <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">Split / Extract</h2>
+                        <p class="text-gray-500 dark:text-gray-400">Extract specific pages or ranges from your PDF.</p>
+                    </header>
+                    <form action="/api/split" method="POST" onsubmit="handleFormSubmit(event)">
+                        <div class="drop-zone border-2 border-dashed border-gray-200 dark:border-white/10 rounded-2xl p-10 flex flex-col items-center justify-center transition-all duration-300 hover:border-brand-500/50 hover:bg-brand-500/5 group cursor-pointer mb-6"
+                            onclick="document.getElementById('split-file').click()">
+                            <div
+                                class="w-16 h-16 rounded-full bg-gray-100 dark:bg-white/5 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:bg-brand-500/20 transition-transform duration-300">
+                                <i
+                                    class="ph ph-file-pdf text-3xl text-gray-500 dark:text-gray-400 group-hover:text-brand-400 transition-colors"></i>
+                            </div>
+                            <p class="text-lg font-medium text-gray-800 dark:text-gray-200 mb-1">Select a PDF file</p>
+                            <input type="file" id="split-file" name="file" accept=".pdf" class="hidden file-input"
+                                required>
+                        </div>
+                        <div class="file-list empty:hidden mb-6" id="split-file-list"></div>
+
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Pages to Extract</label>
+                            <input type="text" name="pages" placeholder="e.g. 1-3, 5, 8-10" required
+                                class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                            <p class="text-xs text-gray-500 mt-2"><i class="ph ph-info mr-1"></i> Format: single pages
+                                or ranges separated by commas.</p>
+                        </div>
+
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Output Filename
+                                (Optional)</label>
+                            <input type="text" name="output_filename" placeholder="e.g. custom_split.pdf"
+                                class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                        </div>
+                        <button type="submit"
+                            class="w-full py-4 rounded-xl font-semibold text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 shadow-lg shadow-brand-500/25 transition-all duration-300 hover:-translate-y-1 transform">
+                            Split PDF
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Compress Tab -->
+                <div id="compress-tab" class="tab-content hidden animate-fade-in">
+                    <header class="mb-10">
+                        <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">Compress PDF</h2>
+                        <p class="text-gray-500 dark:text-gray-400">Reduce file size while maintaining readability.</p>
+                    </header>
+                    <form action="/api/compress" method="POST" onsubmit="handleFormSubmit(event)">
+                        <div class="drop-zone border-2 border-dashed border-gray-200 dark:border-white/10 rounded-2xl p-10 flex flex-col items-center justify-center transition-all duration-300 hover:border-brand-500/50 hover:bg-brand-500/5 group cursor-pointer mb-6"
+                            onclick="document.getElementById('compress-file').click()">
+                            <div
+                                class="w-16 h-16 rounded-full bg-gray-100 dark:bg-white/5 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:bg-brand-500/20 transition-transform duration-300">
+                                <i
+                                    class="ph ph-arrows-in text-3xl text-gray-500 dark:text-gray-400 group-hover:text-brand-400 transition-colors"></i>
+                            </div>
+                            <p class="text-lg font-medium text-gray-800 dark:text-gray-200 mb-1">Select a PDF file</p>
+                            <input type="file" id="compress-file" name="file" accept=".pdf" class="hidden file-input"
+                                required>
+                        </div>
+                        <div class="file-list empty:hidden mb-6" id="compress-file-list"></div>
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Output Filename
+                                (Optional)</label>
+                            <input type="text" name="output_filename" placeholder="e.g. custom_compressed.pdf"
+                                class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                        </div>
+                        <button type="submit"
+                            class="w-full py-4 rounded-xl font-semibold text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 shadow-lg shadow-brand-500/25 transition-all duration-300 hover:-translate-y-1 transform">
+                            Compress PDF
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Protect Tab -->
+                <div id="protect-tab" class="tab-content hidden animate-fade-in">
+                    <header class="mb-10">
+                        <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">Protect PDF</h2>
+                        <p class="text-gray-500 dark:text-gray-400">Encrypt your PDF with a strong password.</p>
+                    </header>
+                    <form action="/api/protect" method="POST" onsubmit="handleFormSubmit(event)">
+                        <div class="drop-zone border-2 border-dashed border-gray-200 dark:border-white/10 rounded-2xl p-10 flex flex-col items-center justify-center transition-all duration-300 hover:border-brand-500/50 hover:bg-brand-500/5 group cursor-pointer mb-6"
+                            onclick="document.getElementById('protect-file').click()">
+                            <div
+                                class="w-16 h-16 rounded-full bg-gray-100 dark:bg-white/5 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:bg-brand-500/20 transition-transform duration-300">
+                                <i
+                                    class="ph ph-lock-key text-3xl text-gray-500 dark:text-gray-400 group-hover:text-brand-400 transition-colors"></i>
+                            </div>
+                            <p class="text-lg font-medium text-gray-800 dark:text-gray-200 mb-1">Select a PDF file</p>
+                            <input type="file" id="protect-file" name="file" accept=".pdf" class="hidden file-input"
+                                required>
+                        </div>
+                        <div class="file-list empty:hidden mb-6" id="protect-file-list"></div>
+
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Password</label>
+                            <input type="password" name="password" placeholder="Enter a secure password" required
+                                class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                        </div>
+
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Output Filename
+                                (Optional)</label>
+                            <input type="text" name="output_filename" placeholder="e.g. custom_protected.pdf"
+                                class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                        </div>
+                        <button type="submit"
+                            class="w-full py-4 rounded-xl font-semibold text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 shadow-lg shadow-brand-500/25 transition-all duration-300 hover:-translate-y-1 transform">
+                            Encrypt PDF
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Unlock Tab -->
+                <div id="unlock-tab" class="tab-content hidden animate-fade-in">
+                    <header class="mb-10">
+                        <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">Unlock PDF</h2>
+                        <p class="text-gray-500 dark:text-gray-400">Remove password protection from an encrypted PDF.</p>
+                    </header>
+                    <form action="/api/unlock" method="POST" onsubmit="handleFormSubmit(event)">
+                        <div class="drop-zone border-2 border-dashed border-gray-200 dark:border-white/10 rounded-2xl p-10 flex flex-col items-center justify-center transition-all duration-300 hover:border-brand-500/50 hover:bg-brand-500/5 group cursor-pointer mb-6"
+                            onclick="document.getElementById('unlock-file').click()">
+                            <div
+                                class="w-16 h-16 rounded-full bg-gray-100 dark:bg-white/5 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:bg-brand-500/20 transition-transform duration-300">
+                                <i
+                                    class="ph ph-lock-key-open text-3xl text-gray-500 dark:text-gray-400 group-hover:text-brand-400 transition-colors"></i>
+                            </div>
+                            <p class="text-lg font-medium text-gray-800 dark:text-gray-200 mb-1">Select a PDF file</p>
+                            <input type="file" id="unlock-file" name="file" accept=".pdf" class="hidden file-input"
+                                required>
+                        </div>
+                        <div class="file-list empty:hidden mb-6" id="unlock-file-list"></div>
+
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Current Password</label>
+                            <input type="password" name="password" placeholder="Enter the current password to unlock"
+                                required
+                                class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                        </div>
+
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Output Filename
+                                (Optional)</label>
+                            <input type="text" name="output_filename" placeholder="e.g. custom_unlocked.pdf"
+                                class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                        </div>
+                        <button type="submit"
+                            class="w-full py-4 rounded-xl font-semibold text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 shadow-lg shadow-brand-500/25 transition-all duration-300 hover:-translate-y-1 transform">
+                            Remove Password
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Watermark Tab -->
+                <div id="watermark-tab" class="tab-content hidden animate-fade-in">
+                    <header class="mb-10">
+                        <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">Watermark</h2>
+                        <p class="text-gray-500 dark:text-gray-400">Stamp a text watermark across all pages.</p>
+                    </header>
+                    <div class="flex flex-col xl:flex-row gap-8">
+                        <!-- Left Column: Controls -->
+                        <div class="flex-1">
+                            <form id="watermark-form" action="/api/watermark" method="POST" onsubmit="handleFormSubmit(event)">
+                                <div class="drop-zone border-2 border-dashed border-gray-200 dark:border-white/10 rounded-2xl p-10 flex flex-col items-center justify-center transition-all duration-300 hover:border-brand-500/50 hover:bg-brand-500/5 group cursor-pointer mb-6"
+                                    onclick="document.getElementById('watermark-file').click()">
+                                    <div
+                                        class="w-16 h-16 rounded-full bg-gray-100 dark:bg-white/5 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:bg-brand-500/20 transition-transform duration-300">
+                                        <i
+                                            class="ph ph-drop text-3xl text-gray-500 dark:text-gray-400 group-hover:text-brand-400 transition-colors"></i>
+                                    </div>
+                                    <p class="text-lg font-medium text-gray-800 dark:text-gray-200 mb-1">Select a PDF file</p>
+                                    <input type="file" id="watermark-file" name="file" accept=".pdf" class="hidden file-input"
+                                        required onchange="window.updateWatermarkPreview()">
+                                </div>
+                                <div class="file-list empty:hidden mb-6" id="watermark-file-list"></div>
+
+                                <div class="mb-6">
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Watermark Text</label>
+                                    <input type="text" id="wm-text" name="text" placeholder="CONFIDENTIAL" required oninput="window.updateWatermarkPreview()"
+                                        class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                                </div>
+
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6 bg-gray-50 dark:bg-black/20 p-6 rounded-2xl border border-gray-200 dark:border-white/10">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Style</label>
+                                        <select id="wm-style" name="style" onchange="window.updateWatermarkPreview()" class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 appearance-none">
+                                            <option value="centered">Centered (Classic)</option>
+                                            <option value="tiled">Tiled (Repeated)</option>
+                                            <option value="fun">Fun (Stylized)</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Font</label>
+                                        <select id="wm-font" name="font" onchange="window.updateWatermarkPreview()" class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 appearance-none">
+                                            <option value="Helvetica-Bold">Helvetica</option>
+                                            <option value="Times-Roman">Times</option>
+                                            <option value="Courier">Courier</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Color</label>
+                                        <div class="flex items-center gap-3">
+                                            <input type="color" id="wm-color" name="color" value="#808080" oninput="window.updateWatermarkPreview()" class="h-12 w-full max-w-[80px] rounded-xl cursor-pointer bg-transparent border border-gray-200 dark:border-white/10 p-1">
+                                            <span class="text-xs text-gray-500 dark:text-gray-400">Pick a color</span>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Size (<span id="wm-size-val">60</span>px)</label>
+                                        <input type="range" id="wm-size" name="size" min="10" max="150" value="60" oninput="document.getElementById('wm-size-val').textContent = this.value; window.updateWatermarkPreview()" class="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-brand-500 mt-3">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Opacity (<span id="wm-opacity-val">30</span>%)</label>
+                                        <input type="range" id="wm-opacity" name="opacity" min="5" max="100" value="30" oninput="document.getElementById('wm-opacity-val').textContent = this.value; window.updateWatermarkPreview()" class="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-brand-500 mt-3">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Rotation (<span id="wm-rotation-val">45</span>&deg;)</label>
+                                        <input type="range" id="wm-rotation" name="rotation" min="-180" max="180" value="45" oninput="document.getElementById('wm-rotation-val').textContent = this.value; window.updateWatermarkPreview()" class="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-brand-500 mt-3">
+                                    </div>
+                                </div>
+
+                                <div class="mb-6">
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Output Filename
+                                        (Optional)</label>
+                                    <input type="text" name="output_filename" placeholder="e.g. custom_watermarked.pdf"
+                                        class="w-full bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all placeholder:text-gray-600">
+                                </div>
+                                <button type="submit"
+                                    class="w-full py-4 rounded-xl font-semibold text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 shadow-lg shadow-brand-500/25 transition-all duration-300 hover:-translate-y-1 transform">
+                                    Apply Watermark
+                                </button>
+                            </form>
+                        </div>
+                        
+                        <!-- Right Column: Live Preview -->
+                        <div class="w-full xl:w-[450px] shrink-0">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Live Preview</label>
+                            <div class="relative w-full aspect-[1/1.414] bg-white dark:bg-[#32364a] border border-gray-200 dark:border-gray-700 rounded-2xl shadow-xl overflow-hidden flex items-center justify-center">
+                                <!-- Base PDF layer -->
+                                <canvas id="wm-preview-bg" class="absolute top-0 left-0 w-full h-full pointer-events-none opacity-0"></canvas>
+                                <!-- Watermark overlay layer -->
+                                <canvas id="wm-preview-fg" class="absolute top-0 left-0 w-full h-full pointer-events-none opacity-0"></canvas>
+                                
+                                <div id="wm-preview-placeholder" class="text-gray-400 dark:text-gray-500 text-center p-6 pointer-events-none transition-opacity duration-300">
+                                    <i class="ph ph-eye text-4xl mb-2 opacity-50"></i>
+                                    <p class="text-sm">Select a file to preview</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <!-- Error Toast -->
+    <div id="error-toast"
+        class="fixed bottom-6 right-6 transform translate-y-24 opacity-0 transition-all duration-300 z-50">
+        <div
+            class="bg-white dark:bg-red-500/10 border border-red-500/30 backdrop-blur-md text-red-600 dark:text-red-200 px-6 py-4 rounded-xl shadow-lg flex items-center gap-3 shadow-red-500/10">
+            <i class="ph ph-warning-circle text-xl"></i>
+            <span id="error-message">An error occurred.</span>
+        </div>
+    </div>
+
+    <!-- PDF Preview Modal -->
+    <div id="preview-modal" class="fixed inset-0 z-[100] bg-gray-900/80 dark:bg-black/80 backdrop-blur-md hidden flex-col items-center justify-center opacity-0 transition-opacity duration-300 p-4 md:p-8">
+        <div class="w-full h-full max-w-6xl glass-panel !bg-white/95 dark:!bg-dark-surface/95 rounded-3xl shadow-2xl flex flex-col overflow-hidden transform scale-95 transition-transform duration-300 border border-gray-200 dark:border-white/10" id="preview-modal-content">
+            <div class="flex items-center justify-between p-6 border-b border-gray-200/50 dark:border-white/10 bg-gray-50/50 dark:bg-black/20">
+                <div class="flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center">
+                        <i class="ph ph-file-pdf text-2xl text-red-500"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-xl font-bold text-gray-900 dark:text-white">Preview Result</h3>
+                        <p class="text-sm text-gray-500 dark:text-gray-400">Review your document before downloading</p>
+                    </div>
+                </div>
+                <div class="flex gap-4 items-center">
+                    <button id="preview-download-btn" class="px-6 py-3 bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 text-white rounded-xl font-semibold transition-all duration-300 shadow-lg shadow-brand-500/25 flex items-center gap-2 hover:-translate-y-0.5">
+                        <i class="ph ph-download-simple text-xl"></i> Download PDF
+                    </button>
+                    <button id="preview-close-btn" class="w-12 h-12 flex items-center justify-center text-gray-700 dark:text-gray-300 bg-gray-200 dark:bg-white/10 hover:bg-gray-300 dark:hover:bg-white/20 rounded-xl transition-colors">
+                        <i class="ph ph-x text-2xl"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="flex-1 bg-gray-200/50 dark:bg-black/40 p-4 md:p-8 overflow-hidden relative">
+                <div class="absolute inset-4 md:inset-8 bg-white dark:bg-[#32364a] rounded-2xl shadow-xl overflow-hidden border border-gray-300 dark:border-gray-700">
+                    <iframe id="preview-frame" class="w-full h-full border-none" src=""></iframe>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>

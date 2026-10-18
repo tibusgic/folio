@@ -1,0 +1,8 @@
+# Caddyfile for PDF Toolkit
+
+# REPLACE THIS WITH YOUR DOMAIN NAME
+# For example: pdf.mydomain.com
+# If you don't have a domain yet, use :80
+:80 {
+    reverse_proxy backend:8000
+}
