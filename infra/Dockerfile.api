@@ -1,10 +1,12 @@
 FROM python:3.12-slim-bookworm
 
-# Install native PDF & LaTeX engines (qpdf, ghostscript, tectonic)
+# Install native PDF & LaTeX engines (qpdf, ghostscript, pdflatex + booktabs/amsmath)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     qpdf \
     ghostscript \
-    tectonic \
+    texlive-latex-base \
+    texlive-latex-recommended \
+    texlive-fonts-recommended \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
