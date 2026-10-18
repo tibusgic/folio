@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="fr" data-theme="dark" data-mode="quick">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark light" />
+  <title>FOLIO — Atelier Documentaire &amp; Moteur PDF Institutionnel</title>
+</head>
+<body>
+  <a class="skip-link" href="#workspace-main">Aller directement à l’atelier</a>
+
+  <div class="app-shell" id="app">
+    <!-- Top Technical Header Bar -->
+    <header class="topbar" role="banner">
+      <div class="topbar__brand">
+        <span class="brand-mark" aria-hidden="true">F/02</span>
+        <div class="brand-titles">
+          <span class="brand-name">FOLIO</span>
+          <span class="brand-sub">DOCUMENT ENGINE · TIER-1</span>
+        </div>
+      </div>
+
+      <div class="topbar__controls" role="toolbar" aria-label="Modes d’affichage et thème">
+        <!-- Quick / B2C vs Enterprise Mode Switch -->
+        <div class="segmented" role="group" aria-label="Mode d’exploitation">
+          <button type="button" id="mode-quick-btn" class="segmented__btn is-active" aria-pressed="true">
+            <span class="segmented__dot" aria-hidden="true"></span>
+            Rapide · B2C
+          </button>
+          <button type="button" id="mode-enterprise-btn" class="segmented__btn" aria-pressed="false">
+            <span class="segmented__dot" aria-hidden="true"></span>
+            Entreprise · Audit &amp; Batch
+          </button>
+        </div>
+
+        <button type="button" id="sample-doc-btn" class="btn btn--ghost btn--sm" title="Charger un document de démonstration">
+          Charger spécimen
+        </button>
+
+        <button type="button" id="theme-toggle-btn" class="btn btn--ghost btn--sm" aria-label="Basculer entre papier clair et encre sombre">
+          <span id="theme-toggle-label">Papier / Encre</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main 3-Column Technical Grid -->
+    <div class="workbench">
+      <!-- Left Rail: Skills Catalog -->
+      <aside class="rail" aria-label="Catalogue de compétences documentaires">
+        <div class="rail__header">
+          <span class="mono-label">PIPELINES / SKILLS</span>
+          <span id="skill-count-badge" class="mono-tag">12</span>
+        </div>
+        <div id="skill-tablist" role="tablist" aria-orientation="vertical" class="skill-list"></div>
+
+        <div class="rail__footer">
+          <div class="spec-row">
+            <span>Architecture</span>
+            <code>WebWorker + Ephemeral</code>
+          </div>
+          <div class="spec-row">
+            <span>Chiffrement</span>
+            <code>AES-256 · SHA-256</code>
+          </div>
+          <div class="spec-row">
+            <span>Télémétrie</span>
+            <code>0 octet externe</code>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center Stage: Active Skill Header, Dropzone, Page Grid, Output & Enterprise Inspector -->
+      <main id="workspace-main" class="stage" tabindex="-1">
+        <!-- Active Tool Header & Privacy Badge -->
+        <section class="tool-banner" aria-live="polite">
+          <div class="tool-banner__meta">
+            <div class="tool-banner__topline">
+              <code id="active-skill-id" class="skill-code">pdf.assemble</code>
+              <span id="privacy-badge" class="privacy-badge privacy-badge--local">
+                <span class="privacy-badge__led" aria-hidden="true"></span>
+                <span id="privacy-badge-text">100% LOCAL · SUR VOTRE MACHINE</span>
+              </span>
+            </div>
+            <h1 id="active-skill-title" class="tool-title">Assembler</h1>
+            <p id="active-skill-summary" class="tool-summary"></p>
+          </div>
+          <div class="tool-banner__specs">
+            <div class="kv-cell">
+              <span class="kv-cell__k">MIMES ACCEPTÉS</span>
+              <code id="spec-mimes" class="kv-cell__v">application/pdf</code>
+            </div>
+            <div class="kv-cell">
+              <span class="kv-cell__k">CAPACITÉ</span>
+              <code id="spec-capacity" class="kv-cell__v">1–50 fichiers</code>
+            </div>
+          </div>
+        </section>
+
+        <!-- Reactive Dropzone with keyboard focus and strict magic-byte check -->
+        <section class="dropzone-section" aria-label="Zone de dépôt de documents">
+          <div
+            id="dropzone"
+            class="dropzone"
+            role="button"
+            tabindex="0"
+            aria-describedby="dropzone-hint"
+          >
+            <input id="file-input" type="file" class="sr-only" multiple />
+            <div class="dropzone__crosshair" aria-hidden="true">+</div>
+            <div class="dropzone__copy">
+              <p class="dropzone__title">
+                Déposez vos fichiers ici ou <span class="dropzone__link">parcourez votre poste</span>
+              </p>
+              <p id="dropzone-hint" class="dropzone__hint">
+                Validation binaire stricte (magic bytes <code>%PDF-</code> / UTF-8). Raccourci : <kbd>Entrée</kbd> ou <kbd>Espace</kbd>.
+              </p>
+            </div>
+            <div class="dropzone__actions">
+              <button type="button" id="clear-files-btn" class="btn btn--ghost btn--sm" hidden>
+                Vider la sélection
+              </button>
+            </div>
+          </div>
+
+          <!-- Loaded Files Table (with SHA-256 & XMP in Enterprise mode) -->
+          <div id="file-table-wrap" class="panel" hidden>
+            <div class="panel__bar">
+              <span class="mono-label">FICHIERS CHARGÉS</span>
+              <span id="file-summary-count" class="mono-tag">0 fichier</span>
+            </div>
+            <div id="file-list" class="file-table" role="list"></div>
+          </div>
+        </section>
+
+        <!-- Multi-page Interactive Preview & Drag-and-Drop / Keyboard Reorder Grid -->
+        <section id="page-grid-panel" class="panel" aria-label="Planche contact des pages" hidden>
+          <div class="panel__bar">
+            <div>
+              <span class="mono-label">PLANCHE CONTACT &amp; SÉQUENCE DE PAGES</span>
+              <span class="panel__hint">Glisser-déposer ou clavier : <kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> déplacer · <kbd>R</kbd> pivoter 90° · <kbd>Suppr</kbd> retirer</span>
+            </div>
+            <div class="panel__actions">
+              <button type="button" id="reset-plan-btn" class="btn btn--ghost btn--sm">Réinitialiser l’ordre</button>
+            </div>
+          </div>
+          <div id="page-grid" class="page-grid" role="listbox" aria-label="Pages du document assemblé"></div>
+        </section>
+
+        <!-- Output & Preview Area -->
+        <section id="output-panel" class="panel panel--output" aria-live="polite" hidden>
+          <div class="panel__bar">
+            <div class="panel__title-group">
+              <span class="status-led status-led--ok" aria-hidden="true"></span>
+              <span class="mono-label">RÉSULTAT DU PIPELINE</span>
+              <code id="output-meta-tag" class="mono-tag"></code>
+            </div>
+            <div class="panel__actions">
+              <button type="button" id="print-html-btn" class="btn btn--primary btn--sm" hidden>
+                Imprimer / Enregistrer en PDF vectoriel
+              </button>
+              <button type="button" id="download-all-btn" class="btn btn--primary btn--sm">
+                Télécharger
+              </button>
+            </div>
+          </div>
+          <div id="output-file-list" class="output-files"></div>
+          <div id="output-preview-container" class="output-preview"></div>
+        </section>
+
+        <!-- Enterprise Audit & Inspection Drawer (Visible in Enterprise mode) -->
+        <section id="enterprise-panel" class="panel enterprise-only" aria-label="Audit cryptographique et métadonnées XMP">
+          <div class="panel__bar">
+            <span class="mono-label">REGISTRE D’AUDIT CRYPTOGRAPHIQUE (SHA-256 / XMP / LOGS)</span>
+            <div class="panel__actions">
+              <button type="button" id="export-audit-btn" class="btn btn--ghost btn--sm">
+                Exporter le journal JSON
+              </button>
+            </div>
+          </div>
+          <div id="audit-log" class="audit-log" role="log" aria-live="polite">
+            <div class="audit-empty">Aucune exécution enregistrée dans cette session.</div>
+          </div>
+        </section>
+      </main>
+
+      <!-- Right Inspector: Declarative Skill Options & Execute Trigger -->
+      <aside class="inspector" aria-label="Paramètres du pipeline">
+        <form id="skill-options-form" class="inspector__form" novalidate>
+          <div class="inspector__header">
+            <span class="mono-label">PARAMÈTRES D’EXÉCUTION</span>
+            <code id="active-skill-version" class="mono-tag">v2.0.0</code>
+          </div>
+
+          <div id="fields-container" class="fields-stack"></div>
+
+          <div class="inspector__submit">
+            <div id="progress-bar-wrap" class="progress-wrap" aria-hidden="true" hidden>
+              <div class="progress-track">
+                <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+              </div>
+              <div class="progress-meta">
+                <span id="progress-label" class="mono-label">En cours…</span>
+                <button type="button" id="cancel-run-btn" class="btn-link">Annuler</button>
+              </div>
+            </div>
+
+            <button type="submit" id="run-skill-btn" class="btn btn--primary btn--block">
+              <span id="run-skill-btn-label">Exécuter le pipeline</span>
+              <kbd class="btn__kbd">⌘↵</kbd>
+            </button>
+          </div>
+        </form>
+      </aside>
+    </div>
+
+    <!-- Accessible Status / Error Banner -->
+    <div id="toast-region" class="toast-region" role="alert" aria-live="assertive" hidden>
+      <div class="toast">
+        <span id="toast-code" class="toast__code">ERREUR</span>
+        <span id="toast-message" class="toast__msg"></span>
+        <button type="button" id="toast-close-btn" class="toast__close" aria-label="Fermer l’alerte">×</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

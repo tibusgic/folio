@@ -1,0 +1,24 @@
+{
+  "name": "folio-platform",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @folio/web",
+    "build": "npm run build -w @folio/web",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.0",
+    "@vitest/coverage-v8": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
