@@ -20,6 +20,7 @@ import {
 } from '@folio/skills-core';
 import { localSkills } from '@folio/skills-local';
 import { remoteSkills } from '@folio/skills-remote';
+import { initLegalModal } from './features/legal/legal-modal.ts';
 import { renderFileThumbnails, revokeThumbnails, type PageThumbItem } from './features/page-grid/thumbnails.ts';
 import { renderSkillForm, type FormController } from './features/tool-panel/form-renderer.ts';
 import { createSpecimenMarkdown, createSpecimenPdf } from './specimen.ts';
@@ -755,3 +756,4 @@ sampleDocBtn.addEventListener('click', async () => {
 
 // Initial Boot
 selectSkill('pdf.assemble');
+initLegalModal();

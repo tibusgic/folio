@@ -66,6 +66,19 @@
             <span>Télémétrie</span>
             <code>0 octet externe</code>
           </div>
+
+          <nav class="rail__legal" aria-label="Informations légales et conformité réglementaire">
+            <span class="rail__legal-label">CADRE LÉGAL &amp; RGPD</span>
+            <div class="rail__legal-links">
+              <button type="button" class="rail__legal-link" data-legal-open="mentions">Mentions légales</button>
+              <span class="rail__legal-sep" aria-hidden="true">·</span>
+              <button type="button" class="rail__legal-link" data-legal-open="privacy">Confidentialité</button>
+              <span class="rail__legal-sep" aria-hidden="true">·</span>
+              <button type="button" class="rail__legal-link" data-legal-open="cookies">Cookies</button>
+              <span class="rail__legal-sep" aria-hidden="true">·</span>
+              <button type="button" class="rail__legal-link" data-legal-open="cgu">CGU</button>
+            </div>
+          </nav>
         </div>
       </aside>
 
@@ -219,6 +232,38 @@
         <span id="toast-code" class="toast__code">ERREUR</span>
         <span id="toast-message" class="toast__msg"></span>
         <button type="button" id="toast-close-btn" class="toast__close" aria-label="Fermer l’alerte">×</button>
+      </div>
+    </div>
+
+    <!-- Dedicated Legal & Regulatory Reading Modal -->
+    <div
+      id="legal-modal"
+      class="legal-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="legal-modal-title"
+      hidden
+    >
+      <div id="legal-modal-backdrop" class="legal-modal__backdrop" aria-hidden="true"></div>
+      <div class="legal-modal__dialog">
+        <header class="legal-modal__header">
+          <div class="legal-modal__meta">
+            <code id="legal-modal-code" class="skill-code">LEX-01 · LCEN</code>
+            <h2 id="legal-modal-title" class="legal-modal__title">Mentions Légales</h2>
+          </div>
+          <div class="legal-modal__actions">
+            <button type="button" id="legal-modal-download" class="btn btn--ghost btn--sm">
+              Télécharger .md
+            </button>
+            <button type="button" id="legal-modal-close" class="btn btn--ghost btn--sm" aria-label="Fermer la fenêtre légale">
+              Fermer <kbd class="btn__kbd">Esc</kbd>
+            </button>
+          </div>
+        </header>
+
+        <div id="legal-modal-tabs" class="legal-modal__tabs" role="tablist" aria-label="Corpus juridique FOLIO"></div>
+
+        <article id="legal-modal-body" class="legal-modal__body legal-prose" tabindex="0"></article>
       </div>
     </div>
   </div>
