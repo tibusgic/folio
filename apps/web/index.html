@@ -2,7 +2,7 @@
 <html lang="fr" data-theme="dark" data-mode="quick">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="color-scheme" content="dark light" />
   <title>FOLIO — Atelier Documentaire &amp; Moteur PDF Institutionnel</title>
 </head>
@@ -25,16 +25,18 @@
         <div class="segmented" role="group" aria-label="Mode d’exploitation">
           <button type="button" id="mode-quick-btn" class="segmented__btn is-active" aria-pressed="true">
             <span class="segmented__dot" aria-hidden="true"></span>
-            Rapide · B2C
+            <span>Rapide</span>
+            <span class="hide-xs">· B2C</span>
           </button>
           <button type="button" id="mode-enterprise-btn" class="segmented__btn" aria-pressed="false">
             <span class="segmented__dot" aria-hidden="true"></span>
-            Entreprise · Audit &amp; Batch
+            <span>Entreprise</span>
+            <span class="hide-xs">· Audit</span>
           </button>
         </div>
 
         <button type="button" id="sample-doc-btn" class="btn btn--ghost btn--sm" title="Charger un document de démonstration">
-          Charger spécimen
+          <span class="hide-xs">Charger </span>Spécimen
         </button>
 
         <button type="button" id="theme-toggle-btn" class="btn btn--ghost btn--sm" aria-label="Basculer entre papier clair et encre sombre">
@@ -43,13 +45,24 @@
       </div>
     </header>
 
-    <!-- Main 3-Column Technical Grid -->
+    <!-- Shared Mobile Bottom-Sheet Backdrop -->
+    <div id="sheet-backdrop" class="sheet-backdrop" aria-hidden="true" hidden></div>
+
+    <!-- Main 3-Column Technical Grid (Transforms into Touch Workbench + Bottom Sheets on Mobile) -->
     <div class="workbench">
-      <!-- Left Rail: Skills Catalog -->
-      <aside class="rail" aria-label="Catalogue de compétences documentaires">
+      <!-- Left Rail: Skills Catalog (Sidebar on Desktop, Slide-up Bottom Sheet on Mobile) -->
+      <aside id="skills-rail" class="rail" aria-label="Catalogue de compétences documentaires">
+        <div class="sheet-grabber" aria-hidden="true">
+          <span class="sheet-grabber__pill"></span>
+        </div>
         <div class="rail__header">
-          <span class="mono-label">PIPELINES / SKILLS</span>
-          <span id="skill-count-badge" class="mono-tag">12</span>
+          <div class="rail__header-titles">
+            <span class="mono-label">PIPELINES / SKILLS</span>
+            <span id="skill-count-badge" class="mono-tag">12</span>
+          </div>
+          <button type="button" id="close-skills-sheet-btn" class="btn btn--ghost btn--sm mobile-only" aria-label="Fermer le catalogue de pipelines">
+            Fermer
+          </button>
         </div>
         <div id="skill-tablist" role="tablist" aria-orientation="vertical" class="skill-list"></div>
 
@@ -82,8 +95,11 @@
         </div>
       </aside>
 
-      <!-- Center Stage: Active Skill Header, Dropzone, Page Grid, Output & Enterprise Inspector -->
+      <!-- Center Stage: Active Skill Header, Touch Dropzone, Page Grid, Output & Enterprise Inspector -->
       <main id="workspace-main" class="stage" tabindex="-1">
+        <!-- Mobile Horizontal Quick-Swipe Skill Selector -->
+        <nav id="mobile-skill-strip" class="mobile-skill-strip mobile-only" aria-label="Sélection rapide de pipeline"></nav>
+
         <!-- Active Tool Header & Privacy Badge -->
         <section class="tool-banner" aria-live="polite">
           <div class="tool-banner__meta">
@@ -109,8 +125,8 @@
           </div>
         </section>
 
-        <!-- Reactive Dropzone with keyboard focus and strict magic-byte check -->
-        <section class="dropzone-section" aria-label="Zone de dépôt de documents">
+        <!-- Adaptive Dropzone (Desktop Drag & Drop + Mobile Native Picker / Camera Scanner / Cloud) -->
+        <section class="dropzone-section" aria-label="Importation de documents">
           <div
             id="dropzone"
             class="dropzone"
@@ -118,24 +134,43 @@
             tabindex="0"
             aria-describedby="dropzone-hint"
           >
+            <!-- Standard File / iCloud / Google Drive Picker -->
             <input id="file-input" type="file" class="sr-only" multiple />
+            <!-- Direct Mobile Camera / Document Scanner Input -->
+            <input
+              id="camera-input"
+              type="file"
+              class="sr-only"
+              accept="application/pdf,image/jpeg,image/png"
+              capture="environment"
+            />
+
             <div class="dropzone__crosshair" aria-hidden="true">+</div>
             <div class="dropzone__copy">
-              <p class="dropzone__title">
+              <p class="dropzone__title desktop-only">
                 Déposez vos fichiers ici ou <span class="dropzone__link">parcourez votre poste</span>
               </p>
+              <p class="dropzone__title mobile-only">
+                Importer depuis <span class="dropzone__link">Fichiers, iCloud, Drive</span> ou Scanner
+              </p>
               <p id="dropzone-hint" class="dropzone__hint">
-                Validation binaire stricte (magic bytes <code>%PDF-</code> / UTF-8). Raccourci : <kbd>Entrée</kbd> ou <kbd>Espace</kbd>.
+                Validation binaire stricte (magic bytes <code>%PDF-</code> / UTF-8). Traitement sans fuite mémoire.
               </p>
             </div>
             <div class="dropzone__actions">
+              <button type="button" id="browse-files-btn" class="btn btn--ghost btn--sm mobile-only">
+                Fichiers / Cloud
+              </button>
+              <button type="button" id="camera-scan-btn" class="btn btn--ghost btn--sm mobile-only">
+                Appareil photo
+              </button>
               <button type="button" id="clear-files-btn" class="btn btn--ghost btn--sm" hidden>
-                Vider la sélection
+                Vider
               </button>
             </div>
           </div>
 
-          <!-- Loaded Files Table (with SHA-256 & XMP in Enterprise mode) -->
+          <!-- Loaded Files List (Condensed Key-Value Cards on Mobile, Table on Desktop) -->
           <div id="file-table-wrap" class="panel" hidden>
             <div class="panel__bar">
               <span class="mono-label">FICHIERS CHARGÉS</span>
@@ -145,12 +180,13 @@
           </div>
         </section>
 
-        <!-- Multi-page Interactive Preview & Drag-and-Drop / Keyboard Reorder Grid -->
+        <!-- Multi-page Interactive Preview & Touch Reorder Grid -->
         <section id="page-grid-panel" class="panel" aria-label="Planche contact des pages" hidden>
           <div class="panel__bar">
             <div>
               <span class="mono-label">PLANCHE CONTACT &amp; SÉQUENCE DE PAGES</span>
-              <span class="panel__hint">Glisser-déposer ou clavier : <kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> déplacer · <kbd>R</kbd> pivoter 90° · <kbd>Suppr</kbd> retirer</span>
+              <span class="panel__hint desktop-only">Glisser-déposer ou clavier : <kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> déplacer · <kbd>R</kbd> pivoter 90° · <kbd>Suppr</kbd> retirer</span>
+              <span class="panel__hint mobile-only">Maintenez la poignée <code>⠿</code> pour déplacer · Touchez <code>⋯</code> pour pivoter, dupliquer ou supprimer</span>
             </div>
             <div class="panel__actions">
               <button type="button" id="reset-plan-btn" class="btn btn--ghost btn--sm">Réinitialiser l’ordre</button>
@@ -169,7 +205,7 @@
             </div>
             <div class="panel__actions">
               <button type="button" id="print-html-btn" class="btn btn--primary btn--sm" hidden>
-                Imprimer / Enregistrer en PDF vectoriel
+                Imprimer / PDF vectoriel
               </button>
               <button type="button" id="download-all-btn" class="btn btn--primary btn--sm">
                 Télécharger
@@ -186,7 +222,7 @@
             <span class="mono-label">REGISTRE D’AUDIT CRYPTOGRAPHIQUE (SHA-256 / XMP / LOGS)</span>
             <div class="panel__actions">
               <button type="button" id="export-audit-btn" class="btn btn--ghost btn--sm">
-                Exporter le journal JSON
+                Exporter JSON
               </button>
             </div>
           </div>
@@ -194,14 +230,33 @@
             <div class="audit-empty">Aucune exécution enregistrée dans cette session.</div>
           </div>
         </section>
+
+        <!-- Mobile Footer Legal Trigger Strip -->
+        <footer class="mobile-legal-bar mobile-only" aria-label="Mentions légales et confidentialité">
+          <button type="button" class="rail__legal-link" data-legal-open="mentions">Mentions légales</button>
+          <span class="rail__legal-sep" aria-hidden="true">·</span>
+          <button type="button" class="rail__legal-link" data-legal-open="privacy">Confidentialité (RGPD)</button>
+          <span class="rail__legal-sep" aria-hidden="true">·</span>
+          <button type="button" class="rail__legal-link" data-legal-open="cookies">Cookies</button>
+          <span class="rail__legal-sep" aria-hidden="true">·</span>
+          <button type="button" class="rail__legal-link" data-legal-open="cgu">CGU</button>
+        </footer>
       </main>
 
-      <!-- Right Inspector: Declarative Skill Options & Execute Trigger -->
-      <aside class="inspector" aria-label="Paramètres du pipeline">
+      <!-- Right Inspector: Declarative Skill Options (Sidebar on Desktop, Slide-up Bottom Sheet on Mobile) -->
+      <aside id="options-inspector" class="inspector" aria-label="Paramètres du pipeline">
+        <div class="sheet-grabber" aria-hidden="true">
+          <span class="sheet-grabber__pill"></span>
+        </div>
         <form id="skill-options-form" class="inspector__form" novalidate>
           <div class="inspector__header">
-            <span class="mono-label">PARAMÈTRES D’EXÉCUTION</span>
-            <code id="active-skill-version" class="mono-tag">v2.0.0</code>
+            <div class="inspector__header-titles">
+              <span class="mono-label">PARAMÈTRES D’EXÉCUTION</span>
+              <code id="active-skill-version" class="mono-tag">v2.0.0</code>
+            </div>
+            <button type="button" id="close-options-sheet-btn" class="btn btn--ghost btn--sm mobile-only" aria-label="Fermer les paramètres">
+              OK
+            </button>
           </div>
 
           <div id="fields-container" class="fields-stack"></div>
@@ -219,12 +274,86 @@
 
             <button type="submit" id="run-skill-btn" class="btn btn--primary btn--block">
               <span id="run-skill-btn-label">Exécuter le pipeline</span>
-              <kbd class="btn__kbd">⌘↵</kbd>
+              <kbd class="btn__kbd hide-xs">⌘↵</kbd>
             </button>
           </div>
         </form>
       </aside>
     </div>
+
+    <!-- Contextual Page Action Bottom Sheet (Rotate, Duplicate, Reorder, Delete) -->
+    <div
+      id="page-action-sheet"
+      class="action-sheet"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="page-action-sheet-title"
+      hidden
+    >
+      <div id="page-action-backdrop" class="action-sheet__backdrop" aria-hidden="true"></div>
+      <div class="action-sheet__panel">
+        <div class="sheet-grabber" aria-hidden="true">
+          <span class="sheet-grabber__pill"></span>
+        </div>
+        <header class="action-sheet__header">
+          <div>
+            <code id="page-action-sheet-code" class="skill-code">PAGE #01</code>
+            <h2 id="page-action-sheet-title" class="action-sheet__title">Actions sur la page</h2>
+          </div>
+          <button type="button" id="page-action-close-btn" class="btn btn--ghost btn--sm">
+            Fermer
+          </button>
+        </header>
+        <div class="action-sheet__grid">
+          <button type="button" id="page-act-rot-cw" class="action-sheet__btn">
+            <span class="action-sheet__icon" aria-hidden="true">↻</span>
+            <span>Pivoter +90° (Horaire)</span>
+          </button>
+          <button type="button" id="page-act-rot-ccw" class="action-sheet__btn">
+            <span class="action-sheet__icon" aria-hidden="true">↺</span>
+            <span>Pivoter −90° (Anti-horaire)</span>
+          </button>
+          <button type="button" id="page-act-duplicate" class="action-sheet__btn">
+            <span class="action-sheet__icon" aria-hidden="true">⧉</span>
+            <span>Dupliquer cette page</span>
+          </button>
+          <button type="button" id="page-act-move-prev" class="action-sheet__btn">
+            <span class="action-sheet__icon" aria-hidden="true">←</span>
+            <span>Reculer d’un rang</span>
+          </button>
+          <button type="button" id="page-act-move-next" class="action-sheet__btn">
+            <span class="action-sheet__icon" aria-hidden="true">→</span>
+            <span>Avancer d’un rang</span>
+          </button>
+          <button type="button" id="page-act-delete" class="action-sheet__btn action-sheet__btn--danger">
+            <span class="action-sheet__icon" aria-hidden="true">×</span>
+            <span>Supprimer la page</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sticky Bottom Action Bar (Thumb Zone for iOS Safari / Android Chrome) -->
+    <nav class="mobile-dock mobile-only" aria-label="Actions principales rapides">
+      <button type="button" id="mobile-skills-btn" class="mobile-dock__btn" aria-expanded="false" aria-controls="skills-rail">
+        <span class="mobile-dock__k">OUTIL</span>
+        <span id="mobile-dock-skill-name" class="mobile-dock__v">Assembler</span>
+      </button>
+
+      <button type="button" id="mobile-add-btn" class="mobile-dock__btn">
+        <span class="mobile-dock__k">SOURCE</span>
+        <span id="mobile-dock-files-count" class="mobile-dock__v">+ Fichier</span>
+      </button>
+
+      <button type="button" id="mobile-options-btn" class="mobile-dock__btn" aria-expanded="false" aria-controls="options-inspector">
+        <span class="mobile-dock__k">OPTIONS</span>
+        <span id="mobile-dock-options-label" class="mobile-dock__v">Réglages</span>
+      </button>
+
+      <button type="button" id="mobile-run-btn" class="mobile-dock__cta">
+        <span id="mobile-run-btn-label">Convertir</span>
+      </button>
+    </nav>
 
     <!-- Accessible Status / Error Banner -->
     <div id="toast-region" class="toast-region" role="alert" aria-live="assertive" hidden>
@@ -246,6 +375,9 @@
     >
       <div id="legal-modal-backdrop" class="legal-modal__backdrop" aria-hidden="true"></div>
       <div class="legal-modal__dialog">
+        <div class="sheet-grabber mobile-only" aria-hidden="true">
+          <span class="sheet-grabber__pill"></span>
+        </div>
         <header class="legal-modal__header">
           <div class="legal-modal__meta">
             <code id="legal-modal-code" class="skill-code">LEX-01 · LCEN</code>
@@ -253,10 +385,10 @@
           </div>
           <div class="legal-modal__actions">
             <button type="button" id="legal-modal-download" class="btn btn--ghost btn--sm">
-              Télécharger .md
+              <span class="hide-xs">Télécharger </span>.md
             </button>
             <button type="button" id="legal-modal-close" class="btn btn--ghost btn--sm" aria-label="Fermer la fenêtre légale">
-              Fermer <kbd class="btn__kbd">Esc</kbd>
+              Fermer <kbd class="btn__kbd hide-xs">Esc</kbd>
             </button>
           </div>
         </header>

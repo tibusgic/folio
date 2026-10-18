@@ -4,6 +4,7 @@ import './design-system/tokens.css';
 
 import { zipSync } from 'fflate';
 import {
+  isFieldVisible,
   MIME,
   runSkill,
   sanitizeFileName,
@@ -21,7 +22,12 @@ import {
 import { localSkills } from '@folio/skills-local';
 import { remoteSkills } from '@folio/skills-remote';
 import { initLegalModal } from './features/legal/legal-modal.ts';
-import { renderFileThumbnails, revokeThumbnails, type PageThumbItem } from './features/page-grid/thumbnails.ts';
+import {
+  duplicatePageThumbItem,
+  renderFileThumbnails,
+  revokeThumbnails,
+  type PageThumbItem,
+} from './features/page-grid/thumbnails.ts';
 import { renderSkillForm, type FormController } from './features/tool-panel/form-renderer.ts';
 import { createSpecimenMarkdown, createSpecimenPdf } from './specimen.ts';
 import type { WorkerRequest, WorkerResponse } from './workers/skill.worker.ts';
@@ -49,6 +55,7 @@ let pagePlanItems: PageThumbItem[] = [];
 let formController: FormController | null = null;
 let lastOutputs: DocumentFile[] = [];
 let activePreviewUrls: string[] = [];
+let activePageSheetIndex: number | null = null;
 const auditHistory: RunRecord[] = [];
 
 // Worker setup for local skills
@@ -63,7 +70,14 @@ const modeEnterpriseBtn = document.getElementById('mode-enterprise-btn') as HTML
 const sampleDocBtn = document.getElementById('sample-doc-btn') as HTMLButtonElement;
 const themeToggleBtn = document.getElementById('theme-toggle-btn') as HTMLButtonElement;
 
+const sheetBackdrop = document.getElementById('sheet-backdrop') as HTMLElement;
+const skillsRailEl = document.getElementById('skills-rail') as HTMLElement;
+const closeSkillsSheetBtn = document.getElementById('close-skills-sheet-btn') as HTMLButtonElement;
+const optionsInspectorEl = document.getElementById('options-inspector') as HTMLElement;
+const closeOptionsSheetBtn = document.getElementById('close-options-sheet-btn') as HTMLButtonElement;
+
 const skillTablist = document.getElementById('skill-tablist') as HTMLElement;
+const mobileSkillStrip = document.getElementById('mobile-skill-strip') as HTMLElement;
 const skillCountBadge = document.getElementById('skill-count-badge') as HTMLElement;
 
 const activeSkillIdEl = document.getElementById('active-skill-id') as HTMLElement;
@@ -77,6 +91,9 @@ const specCapacityEl = document.getElementById('spec-capacity') as HTMLElement;
 
 const dropzoneEl = document.getElementById('dropzone') as HTMLElement;
 const fileInputEl = document.getElementById('file-input') as HTMLInputElement;
+const cameraInputEl = document.getElementById('camera-input') as HTMLInputElement;
+const browseFilesBtn = document.getElementById('browse-files-btn') as HTMLButtonElement;
+const cameraScanBtn = document.getElementById('camera-scan-btn') as HTMLButtonElement;
 const clearFilesBtn = document.getElementById('clear-files-btn') as HTMLButtonElement;
 const fileTableWrap = document.getElementById('file-table-wrap') as HTMLElement;
 const fileSummaryCount = document.getElementById('file-summary-count') as HTMLElement;
@@ -86,6 +103,18 @@ const pageGridPanel = document.getElementById('page-grid-panel') as HTMLElement;
 const pageGridEl = document.getElementById('page-grid') as HTMLElement;
 const resetPlanBtn = document.getElementById('reset-plan-btn') as HTMLButtonElement;
 
+const pageActionSheet = document.getElementById('page-action-sheet') as HTMLElement;
+const pageActionBackdrop = document.getElementById('page-action-backdrop') as HTMLElement;
+const pageActionCode = document.getElementById('page-action-sheet-code') as HTMLElement;
+const pageActionTitle = document.getElementById('page-action-sheet-title') as HTMLElement;
+const pageActionCloseBtn = document.getElementById('page-action-close-btn') as HTMLButtonElement;
+const pageActRotCwBtn = document.getElementById('page-act-rot-cw') as HTMLButtonElement;
+const pageActRotCcwBtn = document.getElementById('page-act-rot-ccw') as HTMLButtonElement;
+const pageActDuplicateBtn = document.getElementById('page-act-duplicate') as HTMLButtonElement;
+const pageActMovePrevBtn = document.getElementById('page-act-move-prev') as HTMLButtonElement;
+const pageActMoveNextBtn = document.getElementById('page-act-move-next') as HTMLButtonElement;
+const pageActDeleteBtn = document.getElementById('page-act-delete') as HTMLButtonElement;
+
 const fieldsContainer = document.getElementById('fields-container') as HTMLElement;
 const optionsForm = document.getElementById('skill-options-form') as HTMLFormElement;
 const runSkillBtn = document.getElementById('run-skill-btn') as HTMLButtonElement;
@@ -93,6 +122,15 @@ const progressWrap = document.getElementById('progress-bar-wrap') as HTMLElement
 const progressFill = document.getElementById('progress-fill') as HTMLElement;
 const progressLabel = document.getElementById('progress-label') as HTMLElement;
 const cancelRunBtn = document.getElementById('cancel-run-btn') as HTMLButtonElement;
+
+const mobileSkillsBtn = document.getElementById('mobile-skills-btn') as HTMLButtonElement;
+const mobileDockSkillName = document.getElementById('mobile-dock-skill-name') as HTMLElement;
+const mobileAddBtn = document.getElementById('mobile-add-btn') as HTMLButtonElement;
+const mobileDockFilesCount = document.getElementById('mobile-dock-files-count') as HTMLElement;
+const mobileOptionsBtn = document.getElementById('mobile-options-btn') as HTMLButtonElement;
+const mobileDockOptionsLabel = document.getElementById('mobile-dock-options-label') as HTMLElement;
+const mobileRunBtn = document.getElementById('mobile-run-btn') as HTMLButtonElement;
+const mobileRunBtnLabel = document.getElementById('mobile-run-btn-label') as HTMLElement;
 
 const outputPanel = document.getElementById('output-panel') as HTMLElement;
 const outputMetaTag = document.getElementById('output-meta-tag') as HTMLElement;
@@ -115,6 +153,21 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} Mo`;
 }
 
+/**
+ * Truncates long filenames in the center so both the leading identifier
+ * and the file extension remain readable on narrow mobile viewports.
+ */
+export function truncateMiddle(name: string, maxLength = 30): string {
+  if (name.length <= maxLength) return name;
+  const dotIndex = name.lastIndexOf('.');
+  const ext = dotIndex > 0 && name.length - dotIndex <= 8 ? name.slice(dotIndex) : '';
+  const stem = ext ? name.slice(0, dotIndex) : name;
+  const keep = Math.max(6, maxLength - ext.length - 1);
+  const head = Math.ceil(keep * 0.62);
+  const tail = Math.max(3, keep - head);
+  return `${stem.slice(0, head)}…${stem.slice(-tail)}${ext}`;
+}
+
 function showToast(code: string, message: string): void {
   toastCode.textContent = code;
   toastMessage.textContent = message;
@@ -130,13 +183,65 @@ function revokeOutputPreviews(): void {
   activePreviewUrls = [];
 }
 
-// Render Left Rail Skills Catalog
+// Mobile Bottom Sheet Management (Skills Rail & Options Inspector)
+function closeAllMobileSheets(): void {
+  skillsRailEl.classList.remove('is-sheet-open');
+  optionsInspectorEl.classList.remove('is-sheet-open');
+  mobileSkillsBtn.setAttribute('aria-expanded', 'false');
+  mobileOptionsBtn.setAttribute('aria-expanded', 'false');
+  sheetBackdrop.hidden = true;
+}
+
+function toggleMobileSheet(target: 'skills' | 'options'): void {
+  const isSkills = target === 'skills';
+  const sheetEl = isSkills ? skillsRailEl : optionsInspectorEl;
+  const otherEl = isSkills ? optionsInspectorEl : skillsRailEl;
+  const willOpen = !sheetEl.classList.contains('is-sheet-open');
+
+  otherEl.classList.remove('is-sheet-open');
+  sheetEl.classList.toggle('is-sheet-open', willOpen);
+
+  mobileSkillsBtn.setAttribute('aria-expanded', String(isSkills && willOpen));
+  mobileOptionsBtn.setAttribute('aria-expanded', String(!isSkills && willOpen));
+  sheetBackdrop.hidden = !willOpen;
+}
+
+sheetBackdrop.addEventListener('click', closeAllMobileSheets);
+closeSkillsSheetBtn.addEventListener('click', closeAllMobileSheets);
+closeOptionsSheetBtn.addEventListener('click', closeAllMobileSheets);
+
+mobileSkillsBtn.addEventListener('click', () => toggleMobileSheet('skills'));
+mobileOptionsBtn.addEventListener('click', () => toggleMobileSheet('options'));
+mobileAddBtn.addEventListener('click', () => {
+  closeAllMobileSheets();
+  fileInputEl.click();
+});
+mobileRunBtn.addEventListener('click', () => {
+  closeAllMobileSheets();
+  void executeActiveSkill();
+});
+
+function syncMobileDockState(): void {
+  mobileDockSkillName.textContent = activeSkill.title;
+  mobileDockFilesCount.textContent =
+    loadedFiles.length === 0 ? '+ Fichier' : `${loadedFiles.length} chargé(s)`;
+
+  const values = formController ? formController.getValues() : {};
+  const visibleFieldsCount = activeSkill.fields.filter((f) =>
+    isFieldVisible(f, values, currentMode),
+  ).length;
+  mobileDockOptionsLabel.textContent =
+    visibleFieldsCount > 0 ? `Réglages (${visibleFieldsCount})` : 'Auto';
+}
+
+// Render Left Rail Skills Catalog & Mobile Horizontal Quick-Swipe Strip
 function renderSkillRail(): void {
   skillTablist.replaceChildren();
+  mobileSkillStrip.replaceChildren();
+
   const visibleSkills = registry.list({ mode: currentMode });
   skillCountBadge.textContent = String(visibleSkills.length);
 
-  // Ensure activeSkill is available in current mode
   if (!visibleSkills.some((s) => s.id === activeSkill.id)) {
     activeSkill = visibleSkills[0]!;
   }
@@ -153,11 +258,12 @@ function renderSkillRail(): void {
     skillTablist.appendChild(groupHeader);
 
     for (const skill of skills) {
+      const isSelected = skill.id === activeSkill.id;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.role = 'tab';
       btn.className = 'skill-tab';
-      btn.setAttribute('aria-selected', String(skill.id === activeSkill.id));
+      btn.setAttribute('aria-selected', String(isSelected));
 
       const nameSpan = document.createElement('span');
       nameSpan.textContent = skill.title;
@@ -168,8 +274,20 @@ function renderSkillRail(): void {
       siteBadge.textContent = isLocal ? 'LOCAL' : 'ÉPHÉMÈRE';
 
       btn.append(nameSpan, siteBadge);
-      btn.addEventListener('click', () => selectSkill(skill.id));
+      btn.addEventListener('click', () => {
+        selectSkill(skill.id);
+        closeAllMobileSheets();
+      });
       skillTablist.appendChild(btn);
+
+      // Mobile Quick-Swipe Horizontal Pill
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'mobile-skill-pill';
+      pill.setAttribute('aria-selected', String(isSelected));
+      pill.textContent = skill.title;
+      pill.addEventListener('click', () => selectSkill(skill.id));
+      mobileSkillStrip.appendChild(pill);
     }
   }
 }
@@ -180,6 +298,7 @@ function selectSkill(skillId: string): void {
   updateActiveToolBanner();
   formController = renderSkillForm(fieldsContainer, activeSkill, currentMode);
   updatePageGridVisibility();
+  syncMobileDockState();
 }
 
 function updateActiveToolBanner(): void {
@@ -240,15 +359,17 @@ async function ingestBrowserFiles(rawList: FileList | File[]): Promise<void> {
   renderLoadedFileTable();
   renderPageGrid();
   updatePageGridVisibility();
+  syncMobileDockState();
 }
 
 function clearLoadedFiles(): void {
   loadedFiles = [];
-  revokeThumbnails(pagePlanItems);
+  revokeThumbnails(pagePlanItems, []);
   pagePlanItems = [];
   renderLoadedFileTable();
   renderPageGrid();
   updatePageGridVisibility();
+  syncMobileDockState();
 }
 
 function renderLoadedFileTable(): void {
@@ -262,9 +383,22 @@ function renderLoadedFileTable(): void {
     row.className = 'file-row';
     row.role = 'listitem';
 
+    const mainLine = document.createElement('div');
+    mainLine.className = 'file-row__main';
+
     const nameEl = document.createElement('span');
     nameEl.className = 'file-row__name';
-    nameEl.textContent = entry.file.name;
+    nameEl.title = entry.file.name;
+    nameEl.textContent = truncateMiddle(entry.file.name, 30);
+
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'file-row__status';
+    statusBadge.textContent = 'PRÊT';
+
+    mainLine.append(nameEl, statusBadge);
+
+    const metaLine = document.createElement('div');
+    metaLine.className = 'file-row__meta';
 
     const mimeEl = document.createElement('code');
     mimeEl.className = 'mono-tag';
@@ -276,7 +410,7 @@ function renderLoadedFileTable(): void {
     const hashEl = document.createElement('span');
     hashEl.className = 'file-row__hash';
     hashEl.title = `SHA-256 : ${entry.sha256}`;
-    hashEl.textContent = `SHA-256 ${entry.sha256.slice(0, 16)}…`;
+    hashEl.textContent = `SHA-256 ${entry.sha256.slice(0, 12)}…`;
 
     const rmBtn = document.createElement('button');
     rmBtn.type = 'button';
@@ -284,19 +418,21 @@ function renderLoadedFileTable(): void {
     rmBtn.textContent = 'Retirer';
     rmBtn.addEventListener('click', () => {
       loadedFiles.splice(idx, 1);
-      revokeThumbnails(pagePlanItems);
+      revokeThumbnails(pagePlanItems, []);
       pagePlanItems = [];
       void rebuildAllThumbnails();
       renderLoadedFileTable();
+      syncMobileDockState();
     });
 
-    row.append(nameEl, mimeEl, sizeEl, hashEl, rmBtn);
+    metaLine.append(mimeEl, sizeEl, hashEl, rmBtn);
+    row.append(mainLine, metaLine);
     fileListEl.appendChild(row);
   });
 }
 
 async function rebuildAllThumbnails(): Promise<void> {
-  revokeThumbnails(pagePlanItems);
+  revokeThumbnails(pagePlanItems, []);
   pagePlanItems = [];
   for (let i = 0; i < loadedFiles.length; i++) {
     const entry = loadedFiles[i]!;
@@ -314,7 +450,93 @@ function updatePageGridVisibility(): void {
   pageGridPanel.hidden = !show;
 }
 
-// Accessible Drag & Drop + Keyboard Reorder Contact Sheet
+// Contextual Page Action Bottom Sheet (Rotate, Duplicate, Move, Delete)
+function openPageActionSheet(index: number): void {
+  const item = pagePlanItems[index];
+  if (!item) return;
+  activePageSheetIndex = index;
+  pageActionCode.textContent = `PAGE #${String(index + 1).padStart(2, '0')} · ${item.rotate}°`;
+  pageActionTitle.textContent = `${truncateMiddle(item.fileName, 26)} (p.${item.pageNumber})`;
+  pageActMovePrevBtn.disabled = index === 0;
+  pageActMoveNextBtn.disabled = index >= pagePlanItems.length - 1;
+  pageActionSheet.hidden = false;
+  pageActRotCwBtn.focus();
+}
+
+function closePageActionSheet(): void {
+  if (pageActionSheet.hidden) return;
+  const restoreIdx = activePageSheetIndex;
+  activePageSheetIndex = null;
+  pageActionSheet.hidden = true;
+  if (restoreIdx !== null && restoreIdx >= 0) {
+    const cards = pageGridEl.querySelectorAll<HTMLElement>('.page-card');
+    cards[Math.min(restoreIdx, cards.length - 1)]?.focus();
+  }
+}
+
+pageActionCloseBtn.addEventListener('click', closePageActionSheet);
+pageActionBackdrop.addEventListener('click', closePageActionSheet);
+
+pageActRotCwBtn.addEventListener('click', () => {
+  if (activePageSheetIndex === null) return;
+  const item = pagePlanItems[activePageSheetIndex];
+  if (!item) return;
+  item.rotate = (((item.rotate + 90) % 360) as 0 | 90 | 180 | 270);
+  renderPageGrid(activePageSheetIndex);
+  closePageActionSheet();
+});
+
+pageActRotCcwBtn.addEventListener('click', () => {
+  if (activePageSheetIndex === null) return;
+  const item = pagePlanItems[activePageSheetIndex];
+  if (!item) return;
+  item.rotate = (((item.rotate + 270) % 360) as 0 | 90 | 180 | 270);
+  renderPageGrid(activePageSheetIndex);
+  closePageActionSheet();
+});
+
+pageActDuplicateBtn.addEventListener('click', () => {
+  if (activePageSheetIndex === null) return;
+  const item = pagePlanItems[activePageSheetIndex];
+  if (!item) return;
+  const dup = duplicatePageThumbItem(item);
+  pagePlanItems.splice(activePageSheetIndex + 1, 0, dup);
+  const nextIdx = activePageSheetIndex + 1;
+  renderPageGrid(nextIdx);
+  closePageActionSheet();
+});
+
+pageActMovePrevBtn.addEventListener('click', () => {
+  if (activePageSheetIndex === null || activePageSheetIndex <= 0) return;
+  const idx = activePageSheetIndex;
+  const [moved] = pagePlanItems.splice(idx, 1);
+  pagePlanItems.splice(idx - 1, 0, moved!);
+  activePageSheetIndex = idx - 1;
+  renderPageGrid(activePageSheetIndex);
+  closePageActionSheet();
+});
+
+pageActMoveNextBtn.addEventListener('click', () => {
+  if (activePageSheetIndex === null || activePageSheetIndex >= pagePlanItems.length - 1) return;
+  const idx = activePageSheetIndex;
+  const [moved] = pagePlanItems.splice(idx, 1);
+  pagePlanItems.splice(idx + 1, 0, moved!);
+  activePageSheetIndex = idx + 1;
+  renderPageGrid(activePageSheetIndex);
+  closePageActionSheet();
+});
+
+pageActDeleteBtn.addEventListener('click', () => {
+  if (activePageSheetIndex === null) return;
+  const idx = activePageSheetIndex;
+  const removed = pagePlanItems.splice(idx, 1);
+  revokeThumbnails(removed, pagePlanItems);
+  renderPageGrid(Math.min(idx, pagePlanItems.length - 1));
+  updatePageGridVisibility();
+  closePageActionSheet();
+});
+
+// Accessible Drag & Drop + Touch Handle Reorder Contact Sheet
 let draggedIndex: number | null = null;
 
 function renderPageGrid(focusIndex?: number): void {
@@ -326,20 +548,82 @@ function renderPageGrid(focusIndex?: number): void {
     card.role = 'option';
     card.tabIndex = 0;
     card.draggable = true;
-    card.setAttribute('aria-label', `Page ${index + 1} issue de ${item.fileName} (page source ${item.pageNumber})`);
+    card.dataset.pageIndex = String(index);
+    card.setAttribute(
+      'aria-label',
+      `Page ${index + 1} issue de ${item.fileName} (page source ${item.pageNumber})`,
+    );
 
-    // Head bar
+    // Head bar with Touch Drag Handle (touch-action: none) + Quick Actions
     const head = document.createElement('div');
     head.className = 'page-card__head';
-    const badge = document.createElement('span');
-    badge.textContent = `#${String(index + 1).padStart(2, '0')}`;
+
+    const dragHandle = document.createElement('button');
+    dragHandle.type = 'button';
+    dragHandle.className = 'page-card__drag-handle';
+    dragHandle.title = 'Maintenir et glisser pour réordonner la page';
+    dragHandle.setAttribute('aria-label', `Déplacer la page ${index + 1}`);
+    dragHandle.textContent = `⠿ #${String(index + 1).padStart(2, '0')}`;
+
+    // Native Pointer / Touch Drag-and-Drop on the handle (prevents scroll conflict on iOS/Android)
+    let pointerActive = false;
+    let targetDropIndex: number | null = null;
+
+    dragHandle.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.stopPropagation();
+      pointerActive = true;
+      targetDropIndex = index;
+      dragHandle.setPointerCapture(e.pointerId);
+      card.classList.add('is-dragging');
+    });
+
+    dragHandle.addEventListener('pointermove', (e) => {
+      if (!pointerActive) return;
+      e.preventDefault();
+      const elUnderPointer = document.elementFromPoint(e.clientX, e.clientY);
+      const hoveredCard = elUnderPointer?.closest<HTMLElement>('.page-card');
+      pageGridEl
+        .querySelectorAll('.page-card.is-drop-target')
+        .forEach((c) => c.classList.remove('is-drop-target'));
+
+      if (hoveredCard && hoveredCard !== card) {
+        const candidateIdx = Number(hoveredCard.dataset.pageIndex);
+        if (!Number.isNaN(candidateIdx)) {
+          targetDropIndex = candidateIdx;
+          hoveredCard.classList.add('is-drop-target');
+        }
+      }
+    });
+
+    const finishPointerDrag = (e: PointerEvent) => {
+      if (!pointerActive) return;
+      pointerActive = false;
+      if (dragHandle.hasPointerCapture(e.pointerId)) {
+        dragHandle.releasePointerCapture(e.pointerId);
+      }
+      card.classList.remove('is-dragging');
+      pageGridEl
+        .querySelectorAll('.page-card.is-drop-target')
+        .forEach((c) => c.classList.remove('is-drop-target'));
+
+      if (targetDropIndex !== null && targetDropIndex !== index) {
+        const [moved] = pagePlanItems.splice(index, 1);
+        pagePlanItems.splice(targetDropIndex, 0, moved!);
+        renderPageGrid(targetDropIndex);
+      }
+      targetDropIndex = null;
+    };
+
+    dragHandle.addEventListener('pointerup', finishPointerDrag);
+    dragHandle.addEventListener('pointercancel', finishPointerDrag);
 
     const actions = document.createElement('div');
     actions.className = 'page-card__actions';
 
     const rotBtn = document.createElement('button');
     rotBtn.type = 'button';
-    rotBtn.className = 'icon-btn';
+    rotBtn.className = 'icon-btn desktop-only';
     rotBtn.title = 'Pivoter de 90° (R)';
     rotBtn.textContent = '↻';
     rotBtn.addEventListener('click', (e) => {
@@ -348,22 +632,21 @@ function renderPageGrid(focusIndex?: number): void {
       renderPageGrid(index);
     });
 
-    const delBtn = document.createElement('button');
-    delBtn.type = 'button';
-    delBtn.className = 'icon-btn';
-    delBtn.title = 'Retirer cette page (Suppr)';
-    delBtn.textContent = '×';
-    delBtn.addEventListener('click', (e) => {
+    const menuBtn = document.createElement('button');
+    menuBtn.type = 'button';
+    menuBtn.className = 'icon-btn';
+    menuBtn.title = 'Actions sur la page (pivoter, dupliquer, supprimer)';
+    menuBtn.setAttribute('aria-label', `Menu d’actions pour la page ${index + 1}`);
+    menuBtn.textContent = '⋯';
+    menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const removed = pagePlanItems.splice(index, 1);
-      revokeThumbnails(removed);
-      renderPageGrid(Math.min(index, pagePlanItems.length - 1));
+      openPageActionSheet(index);
     });
 
-    actions.append(rotBtn, delBtn);
-    head.append(badge, actions);
+    actions.append(rotBtn, menuBtn);
+    head.append(dragHandle, actions);
 
-    // Thumbnail image
+    // Thumbnail image (or lightweight vector placeholder when beyond mobile RAM cap)
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'page-card__thumb';
     if (item.objectUrl) {
@@ -371,16 +654,22 @@ function renderPageGrid(focusIndex?: number): void {
       img.src = item.objectUrl;
       img.alt = `${item.fileName} page ${item.pageNumber}`;
       img.draggable = false;
+      img.loading = 'lazy';
       img.style.transform = `rotate(${item.rotate}deg)`;
       thumbWrap.appendChild(img);
+    } else {
+      const placeholder = document.createElement('div');
+      placeholder.className = 'page-card__placeholder';
+      placeholder.textContent = `PAGE ${item.pageNumber} · ${item.rotate}°`;
+      thumbWrap.appendChild(placeholder);
     }
 
-    // Footnote
+    // Footnote with middle truncation
     const foot = document.createElement('div');
     foot.className = 'page-card__foot';
-    foot.textContent = `${item.fileName} · p.${item.pageNumber}${item.rotate ? ` · ${item.rotate}°` : ''}`;
+    foot.textContent = `${truncateMiddle(item.fileName, 18)} · p.${item.pageNumber}${item.rotate ? ` · ${item.rotate}°` : ''}`;
 
-    // Keyboard accessibility (Alt+ArrowLeft/Right to reorder, R to rotate, Delete to remove)
+    // Keyboard accessibility (Alt+ArrowLeft/Right to reorder, R to rotate, Delete to remove, Enter for action sheet)
     card.addEventListener('keydown', (e) => {
       if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         e.preventDefault();
@@ -397,12 +686,12 @@ function renderPageGrid(focusIndex?: number): void {
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
         const removed = pagePlanItems.splice(index, 1);
-        revokeThumbnails(removed);
+        revokeThumbnails(removed, pagePlanItems);
         renderPageGrid(Math.min(index, pagePlanItems.length - 1));
       }
     });
 
-    // Pointer Drag & Drop
+    // Desktop HTML5 Drag & Drop fallback
     card.addEventListener('dragstart', () => {
       draggedIndex = index;
       card.classList.add('is-dragging');
@@ -437,17 +726,33 @@ resetPlanBtn.addEventListener('click', () => {
   void rebuildAllThumbnails();
 });
 
-// Dropzone Events
-dropzoneEl.addEventListener('click', () => fileInputEl.click());
+// Dropzone & Mobile Native Picker / Camera Events
+dropzoneEl.addEventListener('click', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.closest('button')) return;
+  fileInputEl.click();
+});
 dropzoneEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault();
     fileInputEl.click();
   }
 });
+browseFilesBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  fileInputEl.click();
+});
+cameraScanBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  cameraInputEl.click();
+});
 fileInputEl.addEventListener('change', () => {
   if (fileInputEl.files) void ingestBrowserFiles(fileInputEl.files);
   fileInputEl.value = '';
+});
+cameraInputEl.addEventListener('change', () => {
+  if (cameraInputEl.files) void ingestBrowserFiles(cameraInputEl.files);
+  cameraInputEl.value = '';
 });
 ['dragenter', 'dragover'].forEach((evt) => {
   dropzoneEl.addEventListener(evt, (e) => {
@@ -499,7 +804,6 @@ function runLocalSkillInWorker(
 
     skillWorker.addEventListener('message', onMessage);
 
-    // Clone bytes so loadedFiles remain usable in the main thread for subsequent runs
     const clonedFiles: DocumentFile[] = files.map((f) => ({
       name: f.name,
       mime: f.mime,
@@ -523,7 +827,7 @@ function runLocalSkillInWorker(
 async function executeActiveSkill(): Promise<void> {
   toastRegion.hidden = true;
   if (loadedFiles.length === 0) {
-    showToast('INPUT_COUNT', 'Veuillez déposer au moins un fichier avant de lancer le pipeline.');
+    showToast('INPUT_COUNT', 'Veuillez sélectionner au moins un fichier avant de lancer le pipeline.');
     return;
   }
 
@@ -537,6 +841,8 @@ async function executeActiveSkill(): Promise<void> {
   }
 
   runSkillBtn.disabled = true;
+  mobileRunBtn.disabled = true;
+  mobileRunBtnLabel.textContent = 'En cours…';
   progressWrap.hidden = false;
   progressFill.style.width = '8%';
   progressLabel.textContent = 'Initialisation…';
@@ -561,11 +867,15 @@ async function executeActiveSkill(): Promise<void> {
 
     presentOutput(result);
     appendAuditRecord(result.record);
+    closeAllMobileSheets();
+    outputPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (err) {
     const skillErr = SkillError.from(err);
     showToast(skillErr.code, skillErr.message);
   } finally {
     runSkillBtn.disabled = false;
+    mobileRunBtn.disabled = false;
+    mobileRunBtnLabel.textContent = 'Convertir';
     progressWrap.hidden = true;
     currentAbortController = null;
   }
@@ -584,6 +894,18 @@ optionsForm.addEventListener('submit', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (!pageActionSheet.hidden) {
+      e.preventDefault();
+      closePageActionSheet();
+      return;
+    }
+    if (!sheetBackdrop.hidden) {
+      e.preventDefault();
+      closeAllMobileSheets();
+      return;
+    }
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
     e.preventDefault();
     void executeActiveSkill();
@@ -605,9 +927,22 @@ function presentOutput(result: RunResult): void {
     const row = document.createElement('div');
     row.className = 'file-row';
 
+    const mainLine = document.createElement('div');
+    mainLine.className = 'file-row__main';
+
     const name = document.createElement('span');
     name.className = 'file-row__name';
-    name.textContent = file.name;
+    name.title = file.name;
+    name.textContent = truncateMiddle(file.name, 30);
+
+    const status = document.createElement('span');
+    status.className = 'file-row__status';
+    status.textContent = 'GÉNÉRÉ';
+
+    mainLine.append(name, status);
+
+    const metaLine = document.createElement('div');
+    metaLine.className = 'file-row__meta';
 
     const mime = document.createElement('code');
     mime.className = 'mono-tag';
@@ -618,7 +953,7 @@ function presentOutput(result: RunResult): void {
 
     const hash = document.createElement('span');
     hash.className = 'file-row__hash';
-    hash.textContent = `SHA-256 ${digest.sha256.slice(0, 16)}…`;
+    hash.textContent = `SHA-256 ${digest.sha256.slice(0, 12)}…`;
 
     const dlBtn = document.createElement('button');
     dlBtn.type = 'button';
@@ -626,7 +961,8 @@ function presentOutput(result: RunResult): void {
     dlBtn.textContent = 'Enregistrer';
     dlBtn.addEventListener('click', () => triggerDownload(file));
 
-    row.append(name, mime, size, hash, dlBtn);
+    metaLine.append(mime, size, hash, dlBtn);
+    row.append(mainLine, metaLine);
     outputFileList.appendChild(row);
   });
 
@@ -726,6 +1062,7 @@ function setUiMode(mode: UiMode): void {
   modeEnterpriseBtn.setAttribute('aria-pressed', String(mode === 'enterprise'));
   renderSkillRail();
   formController = renderSkillForm(fieldsContainer, activeSkill, currentMode, formController?.getValues());
+  syncMobileDockState();
 }
 
 modeQuickBtn.addEventListener('click', () => setUiMode('quick'));
@@ -752,6 +1089,7 @@ sampleDocBtn.addEventListener('click', async () => {
   renderLoadedFileTable();
   renderPageGrid();
   updatePageGridVisibility();
+  syncMobileDockState();
 });
 
 // Initial Boot
