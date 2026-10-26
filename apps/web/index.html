@@ -58,7 +58,7 @@
         <div class="rail__header">
           <div class="rail__header-titles">
             <span class="mono-label">PIPELINES / SKILLS</span>
-            <span id="skill-count-badge" class="mono-tag">12</span>
+            <span id="skill-count-badge" class="mono-tag">17</span>
           </div>
           <button type="button" id="close-skills-sheet-btn" class="btn btn--ghost btn--sm mobile-only" aria-label="Fermer le catalogue de pipelines">
             Fermer
@@ -189,7 +189,10 @@
               <span class="panel__hint mobile-only">Maintenez la poignée <code>⠿</code> pour déplacer · Touchez <code>⋯</code> pour pivoter, dupliquer ou supprimer</span>
             </div>
             <div class="panel__actions">
-              <button type="button" id="reset-plan-btn" class="btn btn--ghost btn--sm">Réinitialiser l’ordre</button>
+              <button type="button" id="insert-blank-page-btn" class="btn btn--ghost btn--sm" title="Insérer une page blanche intercalaire">+ Insérer une page blanche</button>
+              <button type="button" id="rotate-all-plan-btn" class="btn btn--ghost btn--sm" title="Pivoter toutes les pages de +90° (sens horaire)">↻ Tout pivoter à +90°</button>
+              <button type="button" id="reverse-plan-btn" class="btn btn--ghost btn--sm" title="Inverser l’ordre complet des pages du document">⇅ Inverser l’ordre des pages</button>
+              <button type="button" id="reset-plan-btn" class="btn btn--ghost btn--sm">Réinitialiser</button>
             </div>
           </div>
           <div id="page-grid" class="page-grid" role="listbox" aria-label="Pages du document assemblé"></div>
@@ -209,6 +212,15 @@
               </button>
               <button type="button" id="download-all-btn" class="btn btn--primary btn--sm">
                 Télécharger
+              </button>
+            </div>
+          </div>
+          <div id="output-chain-bar" class="output-chain-bar" hidden>
+            <span class="mono-label">CHAÎNAGE DE PIPELINES</span>
+            <div class="output-chain-bar__controls">
+              <select id="chain-skill-select" class="select select--sm" aria-label="Sélectionner l’outil suivant pour réinjecter ce résultat"></select>
+              <button type="button" id="chain-skill-btn" class="btn btn--ghost btn--sm">
+                Envoyer le résultat vers… →
               </button>
             </div>
           </div>
@@ -359,8 +371,66 @@
     <div id="toast-region" class="toast-region" role="alert" aria-live="assertive" hidden>
       <div class="toast">
         <span id="toast-code" class="toast__code">ERREUR</span>
-        <span id="toast-message" class="toast__msg"></span>
+        <div class="toast__content">
+          <span id="toast-message" class="toast__msg"></span>
+          <button type="button" id="toast-help-btn" class="toast__help-link">
+            Pourquoi cela ne fonctionne pas ? Voir un exemple valide →
+          </button>
+        </div>
         <button type="button" id="toast-close-btn" class="toast__close" aria-label="Fermer l’alerte">×</button>
+      </div>
+    </div>
+
+    <!-- Error Diagnostic & Working Example Modal (Pop-up) -->
+    <div
+      id="error-help-modal"
+      class="error-help-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="error-help-title"
+      hidden
+    >
+      <div id="error-help-backdrop" class="error-help-modal__backdrop" aria-hidden="true"></div>
+      <div class="error-help-modal__dialog">
+        <div class="sheet-grabber mobile-only" aria-hidden="true">
+          <span class="sheet-grabber__pill"></span>
+        </div>
+        <header class="error-help-modal__header">
+          <div class="error-help-modal__meta">
+            <code id="error-help-badge" class="skill-code">ERR · DIAGNOSTIC</code>
+            <h2 id="error-help-title" class="error-help-modal__title">Diagnostic de compatibilité</h2>
+          </div>
+          <button type="button" id="error-help-close" class="btn btn--ghost btn--sm" aria-label="Fermer l’explication">
+            Fermer <kbd class="btn__kbd hide-xs">Esc</kbd>
+          </button>
+        </header>
+
+        <div class="error-help-modal__body">
+          <section class="error-help-block">
+            <h3 class="error-help-block__heading">Pourquoi ce fichier ou réglage ne fonctionne pas</h3>
+            <p id="error-help-why" class="error-help-block__text"></p>
+          </section>
+
+          <section class="error-help-block">
+            <h3 class="error-help-block__heading">Comment résoudre le problème</h3>
+            <p id="error-help-fix" class="error-help-block__text"></p>
+          </section>
+
+          <section class="error-help-block error-help-block--example">
+            <h3 id="error-help-example-title" class="error-help-block__heading">Exemple de ce qui fonctionne</h3>
+            <ul id="error-help-example-list" class="error-help-list"></ul>
+            <pre id="error-help-example-code" class="error-help-code" hidden></pre>
+          </section>
+        </div>
+
+        <footer class="error-help-modal__footer">
+          <button type="button" id="error-help-load-specimen" class="btn btn--primary btn--sm">
+            Charger le spécimen compatible pour cet outil
+          </button>
+          <button type="button" id="error-help-dismiss" class="btn btn--ghost btn--sm">
+            Compris
+          </button>
+        </footer>
       </div>
     </div>
 

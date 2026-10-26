@@ -133,10 +133,11 @@ def run_unlock_pdf(
         engine = "qpdf-decrypt"
     else:
         reader = PdfReader(str(input_path))
-        if reader.is_encrypted:
-            res = reader.decrypt(password)
-            if res == 0:
-                raise ValueError("Mot de passe incorrect.")
+        if not reader.is_encrypted:
+            raise ValueError("Ce document PDF n'est pas chiffré par un mot de passe.")
+        res = reader.decrypt(password)
+        if res == 0:
+            raise ValueError("Mot de passe incorrect.")
         writer = PdfWriter()
         for page in reader.pages:
             writer.add_page(page)

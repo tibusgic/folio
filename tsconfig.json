@@ -17,5 +17,5 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["packages/*/src", "packages/*/test", "apps/web/src", "contracts"]
+  "include": ["packages/*/src", "packages/*/test", "apps/web/src", "apps/web/test", "contracts"]
 }

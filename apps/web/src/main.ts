@@ -17,19 +17,22 @@ import {
   type RunResult,
   type Skill,
   type SkillCategory,
+  type SkillErrorCode,
   type UiMode,
 } from '@folio/skills-core';
 import { localSkills } from '@folio/skills-local';
 import { remoteSkills } from '@folio/skills-remote';
+import { buildErrorDiagnostic } from './features/error-help/error-help-modal.ts';
 import { initLegalModal } from './features/legal/legal-modal.ts';
 import {
+  createBlankPageThumbItem,
   duplicatePageThumbItem,
   renderFileThumbnails,
   revokeThumbnails,
   type PageThumbItem,
 } from './features/page-grid/thumbnails.ts';
 import { renderSkillForm, type FormController } from './features/tool-panel/form-renderer.ts';
-import { createSpecimenMarkdown, createSpecimenPdf } from './specimen.ts';
+import { createSpecimenForSkill } from './specimen.ts';
 import type { WorkerRequest, WorkerResponse } from './workers/skill.worker.ts';
 
 interface LoadedFileEntry {
@@ -45,11 +48,27 @@ const CATEGORY_LABELS: Record<SkillCategory, string> = {
   inspect: '05 · Conformité & XMP',
 };
 
+/**
+ * Primary / flagship skills directly visible in the main rail & strip.
+ * Secondary / specialized skills are housed inside the "Autres outils" menu.
+ */
+const PRIMARY_SKILL_IDS = new Set<string>([
+  'pdf.assemble',
+  'pdf.split',
+  'md.pdf',
+  'md.latex-pdf',
+  'pdf.compress',
+  'pdf.watermark',
+  'pdf.sign-visual',
+  'pdf.encrypt',
+]);
+
 const registry = new SkillRegistry().registerAll([...localSkills, ...remoteSkills]);
 
 // State
 let currentMode: UiMode = 'quick';
 let activeSkill: Skill<any> = registry.get('pdf.assemble');
+let isMoreSkillsOpen = false;
 let loadedFiles: LoadedFileEntry[] = [];
 let pagePlanItems: PageThumbItem[] = [];
 let formController: FormController | null = null;
@@ -101,6 +120,9 @@ const fileListEl = document.getElementById('file-list') as HTMLElement;
 
 const pageGridPanel = document.getElementById('page-grid-panel') as HTMLElement;
 const pageGridEl = document.getElementById('page-grid') as HTMLElement;
+const insertBlankPageBtn = document.getElementById('insert-blank-page-btn') as HTMLButtonElement;
+const rotateAllPlanBtn = document.getElementById('rotate-all-plan-btn') as HTMLButtonElement;
+const reversePlanBtn = document.getElementById('reverse-plan-btn') as HTMLButtonElement;
 const resetPlanBtn = document.getElementById('reset-plan-btn') as HTMLButtonElement;
 
 const pageActionSheet = document.getElementById('page-action-sheet') as HTMLElement;
@@ -134,6 +156,9 @@ const mobileRunBtnLabel = document.getElementById('mobile-run-btn-label') as HTM
 
 const outputPanel = document.getElementById('output-panel') as HTMLElement;
 const outputMetaTag = document.getElementById('output-meta-tag') as HTMLElement;
+const outputChainBar = document.getElementById('output-chain-bar') as HTMLElement;
+const chainSkillSelect = document.getElementById('chain-skill-select') as HTMLSelectElement;
+const chainSkillBtn = document.getElementById('chain-skill-btn') as HTMLButtonElement;
 const outputFileList = document.getElementById('output-file-list') as HTMLElement;
 const outputPreviewContainer = document.getElementById('output-preview-container') as HTMLElement;
 const downloadAllBtn = document.getElementById('download-all-btn') as HTMLButtonElement;
@@ -145,7 +170,27 @@ const exportAuditBtn = document.getElementById('export-audit-btn') as HTMLButton
 const toastRegion = document.getElementById('toast-region') as HTMLElement;
 const toastCode = document.getElementById('toast-code') as HTMLElement;
 const toastMessage = document.getElementById('toast-message') as HTMLElement;
+const toastHelpBtn = document.getElementById('toast-help-btn') as HTMLButtonElement;
 const toastCloseBtn = document.getElementById('toast-close-btn') as HTMLButtonElement;
+
+const errorHelpModal = document.getElementById('error-help-modal') as HTMLElement;
+const errorHelpBackdrop = document.getElementById('error-help-backdrop') as HTMLElement;
+const errorHelpBadge = document.getElementById('error-help-badge') as HTMLElement;
+const errorHelpTitle = document.getElementById('error-help-title') as HTMLElement;
+const errorHelpWhy = document.getElementById('error-help-why') as HTMLElement;
+const errorHelpFix = document.getElementById('error-help-fix') as HTMLElement;
+const errorHelpExampleTitle = document.getElementById('error-help-example-title') as HTMLElement;
+const errorHelpExampleList = document.getElementById('error-help-example-list') as HTMLElement;
+const errorHelpExampleCode = document.getElementById('error-help-example-code') as HTMLElement;
+const errorHelpCloseBtn = document.getElementById('error-help-close') as HTMLButtonElement;
+const errorHelpDismissBtn = document.getElementById('error-help-dismiss') as HTMLButtonElement;
+const errorHelpLoadSpecimenBtn = document.getElementById('error-help-load-specimen') as HTMLButtonElement;
+
+let lastErrorState: {
+  code: SkillErrorCode;
+  message: string;
+  details?: Record<string, unknown>;
+} | null = null;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} o`;
@@ -168,11 +213,68 @@ export function truncateMiddle(name: string, maxLength = 30): string {
   return `${stem.slice(0, head)}…${stem.slice(-tail)}${ext}`;
 }
 
-function showToast(code: string, message: string): void {
+function showToast(
+  code: SkillErrorCode,
+  message: string,
+  details?: Record<string, unknown>,
+): void {
+  lastErrorState = { code, message, ...(details ? { details } : {}) };
   toastCode.textContent = code;
   toastMessage.textContent = message;
+  toastHelpBtn.hidden = false;
   toastRegion.hidden = false;
 }
+
+function openErrorHelpModal(
+  code: SkillErrorCode,
+  message: string,
+  details?: Record<string, unknown>,
+): void {
+  const guide = buildErrorDiagnostic(code, message, activeSkill, details);
+  errorHelpBadge.textContent = guide.badge;
+  errorHelpTitle.textContent = guide.title;
+  errorHelpWhy.textContent = guide.why;
+  errorHelpFix.textContent = guide.howToFix;
+  errorHelpExampleTitle.textContent = guide.workingExampleTitle;
+
+  errorHelpExampleList.replaceChildren();
+  for (const bullet of guide.workingExampleDetails) {
+    const li = document.createElement('li');
+    li.textContent = bullet;
+    errorHelpExampleList.appendChild(li);
+  }
+
+  if (guide.readonlyworkingExampleCode) {
+    errorHelpExampleCode.textContent = guide.readonlyworkingExampleCode;
+    errorHelpExampleCode.hidden = false;
+  } else {
+    errorHelpExampleCode.textContent = '';
+    errorHelpExampleCode.hidden = true;
+  }
+
+  errorHelpModal.hidden = false;
+  errorHelpCloseBtn.focus();
+}
+
+function closeErrorHelpModal(): void {
+  if (errorHelpModal.hidden) return;
+  errorHelpModal.hidden = true;
+}
+
+toastHelpBtn.addEventListener('click', () => {
+  if (!lastErrorState) return;
+  openErrorHelpModal(lastErrorState.code, lastErrorState.message, lastErrorState.details);
+});
+
+errorHelpCloseBtn.addEventListener('click', closeErrorHelpModal);
+errorHelpDismissBtn.addEventListener('click', closeErrorHelpModal);
+errorHelpBackdrop.addEventListener('click', closeErrorHelpModal);
+
+errorHelpLoadSpecimenBtn.addEventListener('click', () => {
+  closeErrorHelpModal();
+  toastRegion.hidden = true;
+  void loadSpecimenForActiveSkill();
+});
 
 toastCloseBtn.addEventListener('click', () => {
   toastRegion.hidden = true;
@@ -235,6 +337,31 @@ function syncMobileDockState(): void {
 }
 
 // Render Left Rail Skills Catalog & Mobile Horizontal Quick-Swipe Strip
+function createSkillTabButton(skill: Skill<any>): HTMLButtonElement {
+  const isSelected = skill.id === activeSkill.id;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.role = 'tab';
+  btn.className = 'skill-tab';
+  btn.setAttribute('aria-selected', String(isSelected));
+  btn.dataset.skillId = skill.id;
+
+  const nameSpan = document.createElement('span');
+  nameSpan.textContent = skill.title;
+
+  const siteBadge = document.createElement('span');
+  const isLocal = skill.execution === 'local';
+  siteBadge.className = `skill-tab__site ${isLocal ? 'skill-tab__site--local' : 'skill-tab__site--remote'}`;
+  siteBadge.textContent = isLocal ? 'LOCAL' : 'ÉPHÉMÈRE';
+
+  btn.append(nameSpan, siteBadge);
+  btn.addEventListener('click', () => {
+    selectSkill(skill.id);
+    closeAllMobileSheets();
+  });
+  return btn;
+}
+
 function renderSkillRail(): void {
   skillTablist.replaceChildren();
   mobileSkillStrip.replaceChildren();
@@ -246,41 +373,29 @@ function renderSkillRail(): void {
     activeSkill = visibleSkills[0]!;
   }
 
-  const byCat = new Map<SkillCategory, Skill<any>[]>();
-  for (const s of visibleSkills) {
-    byCat.set(s.category, [...(byCat.get(s.category) ?? []), s]);
+  const primarySkills = visibleSkills.filter((s) => PRIMARY_SKILL_IDS.has(s.id));
+  const secondarySkills = visibleSkills.filter((s) => !PRIMARY_SKILL_IDS.has(s.id));
+  const isSecondaryActive = secondarySkills.some((s) => s.id === activeSkill.id);
+  if (isSecondaryActive) {
+    isMoreSkillsOpen = true;
   }
 
-  for (const [cat, skills] of byCat) {
+  const primaryByCat = new Map<SkillCategory, Skill<any>[]>();
+  for (const s of primarySkills) {
+    primaryByCat.set(s.category, [...(primaryByCat.get(s.category) ?? []), s]);
+  }
+
+  for (const [cat, skills] of primaryByCat) {
     const groupHeader = document.createElement('div');
     groupHeader.className = 'skill-group-label';
     groupHeader.textContent = CATEGORY_LABELS[cat];
     skillTablist.appendChild(groupHeader);
 
     for (const skill of skills) {
+      skillTablist.appendChild(createSkillTabButton(skill));
+
+      // Mobile Quick-Swipe Horizontal Pill (Primary tools)
       const isSelected = skill.id === activeSkill.id;
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.role = 'tab';
-      btn.className = 'skill-tab';
-      btn.setAttribute('aria-selected', String(isSelected));
-
-      const nameSpan = document.createElement('span');
-      nameSpan.textContent = skill.title;
-
-      const siteBadge = document.createElement('span');
-      const isLocal = skill.execution === 'local';
-      siteBadge.className = `skill-tab__site ${isLocal ? 'skill-tab__site--local' : 'skill-tab__site--remote'}`;
-      siteBadge.textContent = isLocal ? 'LOCAL' : 'ÉPHÉMÈRE';
-
-      btn.append(nameSpan, siteBadge);
-      btn.addEventListener('click', () => {
-        selectSkill(skill.id);
-        closeAllMobileSheets();
-      });
-      skillTablist.appendChild(btn);
-
-      // Mobile Quick-Swipe Horizontal Pill
       const pill = document.createElement('button');
       pill.type = 'button';
       pill.className = 'mobile-skill-pill';
@@ -290,6 +405,93 @@ function renderSkillRail(): void {
       mobileSkillStrip.appendChild(pill);
     }
   }
+
+  // Secondary / Specialized Tools housed in "Autres outils" collapsible menu
+  if (secondarySkills.length > 0) {
+    const moreSection = document.createElement('div');
+    moreSection.className = 'more-skills-section';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.id = 'more-skills-toggle-btn';
+    toggleBtn.className = `more-skills-toggle${isSecondaryActive ? ' has-active-skill' : ''}`;
+    toggleBtn.setAttribute('aria-expanded', String(isMoreSkillsOpen));
+    toggleBtn.setAttribute('aria-controls', 'more-skills-dropdown');
+
+    const toggleLeft = document.createElement('span');
+    toggleLeft.className = 'more-skills-toggle__label';
+    toggleLeft.textContent = isSecondaryActive
+      ? `Autres outils · ${activeSkill.title}`
+      : 'Autres outils';
+
+    const toggleRight = document.createElement('span');
+    toggleRight.className = 'more-skills-toggle__meta';
+
+    const countBadge = document.createElement('span');
+    countBadge.className = 'mono-tag';
+    countBadge.textContent = `+${secondarySkills.length}`;
+
+    const chevron = document.createElement('span');
+    chevron.className = 'more-skills-toggle__chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.textContent = isMoreSkillsOpen ? '▴' : '▾';
+
+    toggleRight.append(countBadge, chevron);
+    toggleBtn.append(toggleLeft, toggleRight);
+
+    const dropdown = document.createElement('div');
+    dropdown.id = 'more-skills-dropdown';
+    dropdown.className = 'more-skills-dropdown';
+    dropdown.hidden = !isMoreSkillsOpen;
+
+    const secondaryByCat = new Map<SkillCategory, Skill<any>[]>();
+    for (const s of secondarySkills) {
+      secondaryByCat.set(s.category, [...(secondaryByCat.get(s.category) ?? []), s]);
+    }
+
+    for (const [cat, skills] of secondaryByCat) {
+      const subHeader = document.createElement('div');
+      subHeader.className = 'skill-group-label skill-group-label--sub';
+      subHeader.textContent = CATEGORY_LABELS[cat];
+      dropdown.appendChild(subHeader);
+
+      for (const skill of skills) {
+        dropdown.appendChild(createSkillTabButton(skill));
+      }
+    }
+
+    toggleBtn.addEventListener('click', () => {
+      isMoreSkillsOpen = !isMoreSkillsOpen;
+      toggleBtn.setAttribute('aria-expanded', String(isMoreSkillsOpen));
+      chevron.textContent = isMoreSkillsOpen ? '▴' : '▾';
+      dropdown.hidden = !isMoreSkillsOpen;
+    });
+
+    moreSection.append(toggleBtn, dropdown);
+    skillTablist.appendChild(moreSection);
+
+    // Mobile Strip: if a secondary skill is active, show its pill; plus an "Autres outils" trigger
+    if (isSecondaryActive) {
+      const activePill = document.createElement('button');
+      activePill.type = 'button';
+      activePill.className = 'mobile-skill-pill';
+      activePill.setAttribute('aria-selected', 'true');
+      activePill.textContent = activeSkill.title;
+      mobileSkillStrip.appendChild(activePill);
+    }
+
+    const moreMobilePill = document.createElement('button');
+    moreMobilePill.type = 'button';
+    moreMobilePill.className = 'mobile-skill-pill mobile-skill-pill--more';
+    moreMobilePill.setAttribute('aria-selected', 'false');
+    moreMobilePill.textContent = `Autres outils (+${secondarySkills.length}) ▾`;
+    moreMobilePill.addEventListener('click', () => {
+      isMoreSkillsOpen = true;
+      renderSkillRail();
+      toggleMobileSheet('skills');
+    });
+    mobileSkillStrip.appendChild(moreMobilePill);
+  }
 }
 
 function selectSkill(skillId: string): void {
@@ -297,8 +499,20 @@ function selectSkill(skillId: string): void {
   renderSkillRail();
   updateActiveToolBanner();
   formController = renderSkillForm(fieldsContainer, activeSkill, currentMode);
+  renderLoadedFileTable();
   updatePageGridVisibility();
   syncMobileDockState();
+
+  const incompatibleFile = loadedFiles.find((e) => !activeSkill.input.mimes.includes(e.file.mime));
+  if (incompatibleFile) {
+    showToast(
+      'INPUT_TYPE',
+      `Le fichier chargé « ${incompatibleFile.file.name} » (${incompatibleFile.file.mime}) n'est pas compatible avec « ${activeSkill.title} ».`,
+      { accepted: [...activeSkill.input.mimes], detected: incompatibleFile.file.mime },
+    );
+  } else {
+    toastRegion.hidden = true;
+  }
 }
 
 function updateActiveToolBanner(): void {
@@ -342,6 +556,15 @@ async function ingestBrowserFiles(rawList: FileList | File[]): Promise<void> {
       continue;
     }
 
+    if (!activeSkill.input.mimes.includes(detectedMime)) {
+      showToast(
+        'INPUT_TYPE',
+        `Le fichier « ${sanitizeFileName(raw.name)} » (${detectedMime}) est incompatible avec l’outil « ${activeSkill.title} ».`,
+        { accepted: [...activeSkill.input.mimes], detected: detectedMime },
+      );
+      continue;
+    }
+
     const docFile: DocumentFile = {
       name: sanitizeFileName(raw.name),
       mime: detectedMime,
@@ -379,6 +602,7 @@ function renderLoadedFileTable(): void {
   fileSummaryCount.textContent = `${loadedFiles.length} fichier(s)`;
 
   loadedFiles.forEach((entry, idx) => {
+    const isCompatible = activeSkill.input.mimes.includes(entry.file.mime);
     const row = document.createElement('div');
     row.className = 'file-row';
     row.role = 'listitem';
@@ -392,8 +616,8 @@ function renderLoadedFileTable(): void {
     nameEl.textContent = truncateMiddle(entry.file.name, 30);
 
     const statusBadge = document.createElement('span');
-    statusBadge.className = 'file-row__status';
-    statusBadge.textContent = 'PRÊT';
+    statusBadge.className = isCompatible ? 'file-row__status' : 'file-row__status file-row__status--warn';
+    statusBadge.textContent = isCompatible ? 'PRÊT' : 'INCOMPATIBLE';
 
     mainLine.append(nameEl, statusBadge);
 
@@ -412,6 +636,23 @@ function renderLoadedFileTable(): void {
     hashEl.title = `SHA-256 : ${entry.sha256}`;
     hashEl.textContent = `SHA-256 ${entry.sha256.slice(0, 12)}…`;
 
+    if (!isCompatible) {
+      const whyBtn = document.createElement('button');
+      whyBtn.type = 'button';
+      whyBtn.className = 'file-row__why-btn';
+      whyBtn.textContent = 'Pourquoi ? Voir exemple';
+      whyBtn.addEventListener('click', () => {
+        openErrorHelpModal(
+          'INPUT_TYPE',
+          `« ${entry.file.name} » (${entry.file.mime}) n'est pas d'un type accepté par « ${activeSkill.title} ».`,
+          { accepted: [...activeSkill.input.mimes], detected: entry.file.mime },
+        );
+      });
+      metaLine.append(mimeEl, sizeEl, whyBtn);
+    } else {
+      metaLine.append(mimeEl, sizeEl, hashEl);
+    }
+
     const rmBtn = document.createElement('button');
     rmBtn.type = 'button';
     rmBtn.className = 'icon-btn';
@@ -425,7 +666,7 @@ function renderLoadedFileTable(): void {
       syncMobileDockState();
     });
 
-    metaLine.append(mimeEl, sizeEl, hashEl, rmBtn);
+    metaLine.appendChild(rmBtn);
     row.append(mainLine, metaLine);
     fileListEl.appendChild(row);
   });
@@ -649,7 +890,12 @@ function renderPageGrid(focusIndex?: number): void {
     // Thumbnail image (or lightweight vector placeholder when beyond mobile RAM cap)
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'page-card__thumb';
-    if (item.objectUrl) {
+    if (item.blank) {
+      const placeholder = document.createElement('div');
+      placeholder.className = 'page-card__placeholder page-card__placeholder--blank';
+      placeholder.textContent = `PAGE BLANCHE · A4${item.rotate ? ` · ${item.rotate}°` : ''}`;
+      thumbWrap.appendChild(placeholder);
+    } else if (item.objectUrl) {
       const img = document.createElement('img');
       img.src = item.objectUrl;
       img.alt = `${item.fileName} page ${item.pageNumber}`;
@@ -667,7 +913,9 @@ function renderPageGrid(focusIndex?: number): void {
     // Footnote with middle truncation
     const foot = document.createElement('div');
     foot.className = 'page-card__foot';
-    foot.textContent = `${truncateMiddle(item.fileName, 18)} · p.${item.pageNumber}${item.rotate ? ` · ${item.rotate}°` : ''}`;
+    foot.textContent = item.blank
+      ? `Intercalaire vierge · #${item.pageNumber}${item.rotate ? ` · ${item.rotate}°` : ''}`
+      : `${truncateMiddle(item.fileName, 18)} · p.${item.pageNumber}${item.rotate ? ` · ${item.rotate}°` : ''}`;
 
     // Keyboard accessibility (Alt+ArrowLeft/Right to reorder, R to rotate, Delete to remove, Enter for action sheet)
     card.addEventListener('keydown', (e) => {
@@ -721,6 +969,28 @@ function renderPageGrid(focusIndex?: number): void {
     cards[focusIndex]?.focus();
   }
 }
+
+insertBlankPageBtn.addEventListener('click', () => {
+  const blankCount = pagePlanItems.filter((p) => p.blank).length;
+  const blankItem = createBlankPageThumbItem(blankCount + 1);
+  pagePlanItems.push(blankItem);
+  renderPageGrid(pagePlanItems.length - 1);
+  updatePageGridVisibility();
+});
+
+rotateAllPlanBtn.addEventListener('click', () => {
+  if (pagePlanItems.length === 0) return;
+  for (const item of pagePlanItems) {
+    item.rotate = (((item.rotate + 90) % 360) as 0 | 90 | 180 | 270);
+  }
+  renderPageGrid();
+});
+
+reversePlanBtn.addEventListener('click', () => {
+  if (pagePlanItems.length <= 1) return;
+  pagePlanItems.reverse();
+  renderPageGrid();
+});
 
 resetPlanBtn.addEventListener('click', () => {
   void rebuildAllThumbnails();
@@ -837,6 +1107,7 @@ async function executeActiveSkill(): Promise<void> {
       file: p.fileIndex,
       page: p.pageNumber,
       rotate: p.rotate,
+      ...(p.blank ? { blank: true } : {}),
     }));
   }
 
@@ -871,7 +1142,7 @@ async function executeActiveSkill(): Promise<void> {
     outputPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (err) {
     const skillErr = SkillError.from(err);
-    showToast(skillErr.code, skillErr.message);
+    showToast(skillErr.code, skillErr.message, skillErr.details);
   } finally {
     runSkillBtn.disabled = false;
     mobileRunBtn.disabled = false;
@@ -895,6 +1166,11 @@ optionsForm.addEventListener('submit', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (!errorHelpModal.hidden) {
+      e.preventDefault();
+      closeErrorHelpModal();
+      return;
+    }
     if (!pageActionSheet.hidden) {
       e.preventDefault();
       closePageActionSheet();
@@ -912,11 +1188,83 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Output Presentation
+// Output Presentation & Pipeline Chaining ("Envoyer le résultat vers…")
+function populateChainSkillOptions(files: readonly DocumentFile[]): void {
+  chainSkillSelect.replaceChildren();
+  const primary = files[0];
+  if (!primary) {
+    outputChainBar.hidden = true;
+    return;
+  }
+
+  const allSkills = registry.list();
+  const compatibleTargets = allSkills.filter(
+    (s) => s.id !== activeSkill.id && s.input.mimes.includes(primary.mime),
+  );
+
+  if (compatibleTargets.length === 0) {
+    outputChainBar.hidden = true;
+    return;
+  }
+
+  for (const target of compatibleTargets) {
+    const opt = document.createElement('option');
+    opt.value = target.id;
+    const siteTag = target.execution === 'local' ? '100% Local' : 'Éphémère';
+    opt.textContent = `${target.title} (${target.id} · ${siteTag})`;
+    chainSkillSelect.appendChild(opt);
+  }
+  outputChainBar.hidden = false;
+}
+
+async function chainOutputToSelectedSkill(): Promise<void> {
+  const targetSkillId = chainSkillSelect.value;
+  if (!targetSkillId || lastOutputs.length === 0) return;
+
+  const targetSkill = registry.get(targetSkillId);
+  const compatibleOutputs = lastOutputs
+    .filter((f) => targetSkill.input.mimes.includes(f.mime))
+    .slice(0, targetSkill.input.maxFiles);
+
+  if (compatibleOutputs.length === 0) return;
+
+  // If the target skill requires enterprise mode and we are in quick mode, switch automatically
+  if (!targetSkill.modes.includes(currentMode)) {
+    setUiMode('enterprise');
+  }
+
+  toastRegion.hidden = true;
+  clearLoadedFiles();
+
+  for (let i = 0; i < compatibleOutputs.length; i++) {
+    const doc = {
+      name: compatibleOutputs[i]!.name,
+      mime: compatibleOutputs[i]!.mime,
+      bytes: compatibleOutputs[i]!.bytes.slice(),
+    };
+    const sha256 = await sha256Hex(doc.bytes);
+    loadedFiles.push({ file: doc, sha256 });
+  }
+
+  outputPanel.hidden = true;
+  selectSkill(targetSkill.id);
+  await rebuildAllThumbnails();
+  syncMobileDockState();
+
+  const workspaceMain = document.getElementById('workspace-main');
+  workspaceMain?.scrollTo({ top: 0, behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+chainSkillBtn.addEventListener('click', () => {
+  void chainOutputToSelectedSkill();
+});
+
 function presentOutput(result: RunResult): void {
   revokeOutputPreviews();
   lastOutputs = result.files;
   outputPanel.hidden = false;
+  populateChainSkillOptions(result.files);
 
   const totalBytes = result.files.reduce((acc, f) => acc + f.bytes.byteLength, 0);
   outputMetaTag.textContent = `${result.files.length} fichier(s) · ${formatBytes(totalBytes)} · ${result.record.durationMs} ms`;
@@ -1073,23 +1421,38 @@ themeToggleBtn.addEventListener('click', () => {
   htmlRoot.setAttribute('data-theme', next);
 });
 
-sampleDocBtn.addEventListener('click', async () => {
+async function loadSpecimenForActiveSkill(): Promise<void> {
+  toastRegion.hidden = true;
   clearLoadedFiles();
-  if (activeSkill.input.mimes.includes(MIME.markdown)) {
-    const mdDoc = createSpecimenMarkdown();
-    const sha256 = await sha256Hex(mdDoc.bytes);
-    loadedFiles.push({ file: mdDoc, sha256 });
-  } else {
-    const pdfDoc = await createSpecimenPdf();
-    const sha256 = await sha256Hex(pdfDoc.bytes);
-    loadedFiles.push({ file: pdfDoc, sha256 });
-    const thumbs = await renderFileThumbnails(pdfDoc.bytes, 0, pdfDoc.name);
-    pagePlanItems.push(...thumbs);
+  const bundle = await createSpecimenForSkill(activeSkill.id);
+
+  for (let i = 0; i < bundle.files.length; i++) {
+    const doc = bundle.files[i]!;
+    const sha256 = await sha256Hex(doc.bytes);
+    loadedFiles.push({ file: doc, sha256 });
+    if (doc.mime === MIME.pdf) {
+      const thumbs = await renderFileThumbnails(doc.bytes, i, doc.name);
+      pagePlanItems.push(...thumbs);
+    }
   }
+
+  if (bundle.presetOptions) {
+    formController = renderSkillForm(
+      fieldsContainer,
+      activeSkill,
+      currentMode,
+      bundle.presetOptions,
+    );
+  }
+
   renderLoadedFileTable();
   renderPageGrid();
   updatePageGridVisibility();
   syncMobileDockState();
+}
+
+sampleDocBtn.addEventListener('click', () => {
+  void loadSpecimenForActiveSkill();
 });
 
 // Initial Boot

@@ -4,14 +4,27 @@ import { MIME, runSkill } from '@folio/skills-core';
 import {
   analyzePages,
   assembleSkill,
+  cropMarginsSkill,
+  imagesToPdfSkill,
   inspectSkill,
   markdownPrintSkill,
   metadataSkill,
+  pageNumbersSkill,
+  redactSkill,
   signatureSkill,
   splitSkill,
   toMarkdown,
   watermarkSkill,
 } from '../src/index.ts';
+
+// Minimal valid 1x1 transparent PNG
+const ONE_BY_ONE_PNG = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+  0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x60, 0x60, 0x60,
+  0x00, 0x00, 0x00, 0x05, 0x00, 0x01, 0x87, 0xa1, 0x4e, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+  0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+]);
 
 async function makeSamplePdf(pageCount: number, title = 'Sample'): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
@@ -185,5 +198,136 @@ $$
     expect(html).toContain('<math');
     expect(html).toContain('break-inside: avoid');
     expect(html).not.toContain('<script>alert("xss")</script>');
+  });
+
+  it('inserts blank pages in assembleSkill when plan contains blank entries', async () => {
+    const pdfA = await makeSamplePdf(2, 'Doc A');
+    const res = await runSkill(
+      assembleSkill,
+      [{ name: 'a.pdf', mime: MIME.pdf, bytes: pdfA }],
+      {
+        plan: [
+          { file: 0, page: 1, rotate: 0 },
+          { file: -1, page: 1, rotate: 0, blank: true },
+          { file: 0, page: 2, rotate: 90 },
+        ],
+      },
+    );
+
+    const outDoc = await PDFDocument.load(res.files[0]!.bytes);
+    expect(outDoc.getPageCount()).toBe(3);
+    expect(res.record.report?.blankPages).toBe(1);
+  });
+
+  it('embeds a PNG logo and places watermark in background (layer: under)', async () => {
+    const pdf = await makeSamplePdf(2, 'Contrat');
+    const res = await runSkill(
+      watermarkSkill,
+      [
+        { name: 'contrat.pdf', mime: MIME.pdf, bytes: pdf },
+        { name: 'logo.png', mime: MIME.png, bytes: ONE_BY_ONE_PNG },
+      ],
+      {
+        text: 'CONFIDENTIEL',
+        layer: 'under',
+        logoScale: 0.5,
+      },
+    );
+
+    expect(res.files).toHaveLength(1);
+    expect(res.record.report?.layer).toBe('under');
+    expect(res.record.report?.hasLogo).toBe(true);
+  });
+
+  it('converts multiple PNG images into a clean A4 PDF (img.to-pdf)', async () => {
+    const res = await runSkill(
+      imagesToPdfSkill,
+      [
+        { name: 'scan-1.png', mime: MIME.png, bytes: ONE_BY_ONE_PNG },
+        { name: 'scan-2.png', mime: MIME.png, bytes: ONE_BY_ONE_PNG },
+      ],
+      {
+        pageFormat: 'A4',
+        orientation: 'portrait',
+        marginMm: 12,
+        fitMode: 'contain',
+      },
+    );
+
+    expect(res.files).toHaveLength(1);
+    const outDoc = await PDFDocument.load(res.files[0]!.bytes);
+    expect(outDoc.getPageCount()).toBe(2);
+    expect(Math.round(outDoc.getPage(0).getSize().width)).toBe(595);
+  });
+
+  it('applies professional page numbering & Bates stamping (pdf.page-numbers)', async () => {
+    const pdf = await makeSamplePdf(3, 'Pièce');
+    const res = await runSkill(
+      pageNumbersSkill,
+      [{ name: 'piece.pdf', mime: MIME.pdf, bytes: pdf }],
+      {
+        format: 'bates',
+        batesPrefix: 'PIECE-',
+        batesDigits: 4,
+        position: 'bottom-right',
+        headerText: 'DOSSIER #42',
+        includeDate: true,
+      },
+    );
+
+    expect(res.files).toHaveLength(1);
+    expect(res.record.report?.numberedPages).toBe(3);
+  });
+
+  it('crops margins and normalizes heterogeneous pages to standard A4 (pdf.crop-margins)', async () => {
+    const pdf = await makeSamplePdf(2, 'Hétérogène');
+    const res = await runSkill(
+      cropMarginsSkill,
+      [{ name: 'scan.pdf', mime: MIME.pdf, bytes: pdf }],
+      {
+        mode: 'both',
+        cropTopMm: 10,
+        cropBottomMm: 10,
+        cropLeftMm: 10,
+        cropRightMm: 10,
+        targetFormat: 'A4',
+      },
+    );
+
+    expect(res.files).toHaveLength(1);
+    const outDoc = await PDFDocument.load(res.files[0]!.bytes);
+    expect(outDoc.getPageCount()).toBe(2);
+    const { width, height } = outDoc.getPage(0).getSize();
+    expect(Math.round(width)).toBe(595);
+    expect(Math.round(height)).toBe(842);
+  });
+
+  it('redacts sensitive patterns and strips PDF metadata (pdf.redact)', async () => {
+    const doc = await PDFDocument.create();
+    doc.setTitle('Secret RGPD');
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const page = doc.addPage([595, 842]);
+    page.drawText('Contact: jean.dupont@cabinet.fr et IBAN FR7630006000011234567890189', {
+      x: 50,
+      y: 700,
+      size: 11,
+      font,
+    });
+    const pdfBytes = await doc.save({ useObjectStreams: false });
+
+    const res = await runSkill(
+      redactSkill,
+      [{ name: 'dossier.pdf', mime: MIME.pdf, bytes: pdfBytes }],
+      {
+        redactEmails: true,
+        redactIbans: true,
+        stripMetadata: true,
+      },
+    );
+
+    expect(res.files).toHaveLength(1);
+    expect(Number(res.record.report?.redactedTotal)).toBeGreaterThanOrEqual(2);
+    const outDoc = await PDFDocument.load(res.files[0]!.bytes);
+    expect(outDoc.getTitle()).toBeUndefined();
   });
 });

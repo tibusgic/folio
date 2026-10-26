@@ -22,7 +22,11 @@ function startsWith(bytes: Uint8Array, magic: readonly number[], offset = 0): bo
   return magic.every((b, i) => bytes[offset + i] === b);
 }
 
-/** The PDF spec tolerates garbage before the header; Acrobat scans the first 1024 bytes. */
+/**
+ * The PDF spec tolerates minor leading whitespace/garbage before the header,
+ * unless the file has an explicit text extension (.md, .markdown, .bib, .tex, .txt)
+ * and does not start with %PDF- at offset 0.
+ */
 export function findPdfHeader(bytes: Uint8Array): number {
   const limit = Math.min(bytes.length - PDF_MAGIC.length, 1024);
   for (let i = 0; i <= limit; i++) if (startsWith(bytes, PDF_MAGIC, i)) return i;
@@ -46,13 +50,17 @@ function isUtf8Text(bytes: Uint8Array): boolean {
 
 /** Returns the detected MIME type, or null if the content is not recognised. */
 export function sniffMime(bytes: Uint8Array, name: string): string | null {
+  const ext = extensionOf(name);
+  const textual: Record<string, string> = { md: MIME.markdown, markdown: MIME.markdown, bib: MIME.bibtex };
+  const candidate = textual[ext];
+  if (candidate && !startsWith(bytes, PDF_MAGIC, 0) && isUtf8Text(bytes)) {
+    return candidate;
+  }
+
   if (findPdfHeader(bytes) !== -1) return MIME.pdf;
   if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return MIME.png;
   if (startsWith(bytes, [0xff, 0xd8, 0xff])) return MIME.jpeg;
 
-  const ext = extensionOf(name);
-  const textual: Record<string, string> = { md: MIME.markdown, markdown: MIME.markdown, bib: MIME.bibtex };
-  const candidate = textual[ext];
   if (candidate && isUtf8Text(bytes)) return candidate;
   return null;
 }

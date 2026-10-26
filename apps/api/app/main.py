@@ -32,6 +32,7 @@ from app.security import (
 from app.skills.compress import run_compress_pdf
 from app.skills.crypto import run_encrypt_pdf, run_unlock_pdf
 from app.skills.latex import run_compile_latex_pdf
+from app.skills.ocr import run_ocr_pipeline
 
 app = FastAPI(
     title="Folio Ephemeral Document Engine",
@@ -261,3 +262,60 @@ async def latex_pdf_endpoint(
         pdf_bytes = out_path.read_bytes()
 
     return build_pdf_response(pdf_bytes, f"{md_filename}.pdf", report)
+
+
+@app.post("/api/v2/ocr")
+async def ocr_endpoint(
+    files: list[UploadFile] = File(...),
+    options: str | None = Form(None),
+) -> Response:
+    if not files:
+        raise HTTPException(status_code=400, detail={"code": "INPUT_COUNT", "message": "Aucun fichier reçu."})
+    opts = parse_options_json(options)
+    upload = files[0]
+    output_format = str(opts.get("outputFormat", "searchable-pdf"))
+
+    with ephemeral_workdir("folio_ocr_") as workdir:
+        in_path = workdir / "input.bin"
+        out_path = workdir / ("output.md" if output_format == "markdown" else "output.pdf")
+        _, in_sha = await stream_upload_checked(upload, in_path, expect_pdf=False)
+        try:
+            media_type, report = run_ocr_pipeline(in_path, out_path, workdir, opts)
+        except ValueError as exc:
+            raise HTTPException(status_code=415, detail={"code": "INPUT_TYPE", "message": str(exc)}) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(status_code=504, detail={"code": "TIMEOUT", "message": "Délai d'exécution OCR dépassé."}) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "SKILL_FAILED", "message": "Impossible d'exécuter la reconnaissance optique sur ce fichier."},
+            ) from exc
+        out_bytes = out_path.read_bytes()
+
+    raw_stem = sanitize_filename(upload.filename, "document")
+    for suffix in (".pdf", ".png", ".jpg", ".jpeg"):
+        if raw_stem.lower().endswith(suffix):
+            raw_stem = raw_stem[: -len(suffix)]
+            break
+
+    if output_format == "markdown":
+        clean_name = sanitize_filename(f"{raw_stem}-ocr.md", "document-ocr.md")
+        out_sha256 = hashlib.sha256(out_bytes).hexdigest()
+        full_report = {
+            **report,
+            "inputSha256": in_sha,
+            "outputSha256": out_sha256,
+            "outputBytes": len(out_bytes),
+            "zeroRetentionPurged": True,
+        }
+        encoded_name = quote(clean_name)
+        return Response(
+            content=out_bytes,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{clean_name}\"; filename*=UTF-8''{encoded_name}",
+                "X-Folio-Report": json.dumps(full_report, separators=(",", ":")),
+            },
+        )
+
+    return build_pdf_response(out_bytes, f"{raw_stem}-ocr.pdf", {**report, "inputSha256": in_sha})

@@ -8,7 +8,12 @@ import {
   type RunResult,
   type SerializedSkillError,
 } from '@folio/skills-core';
-import { localSkills } from '@folio/skills-local';
+import { localSkills, setPdfjsLoader } from '@folio/skills-local';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+setPdfjsLoader(async () => pdfjsLib);
 
 const registry = new SkillRegistry().registerAll(localSkills);
 const activeControllers = new Map<string, AbortController>();

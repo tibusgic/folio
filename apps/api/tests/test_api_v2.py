@@ -136,3 +136,26 @@ LaTeX & Opérationnel \\
     )
     assert malicious_res.status_code == 400
     assert malicious_res.json()["detail"]["code"] == "FORBIDDEN_CONTENT"
+
+
+def test_ocr_endpoint_searchable_pdf_and_markdown() -> None:
+    pdf_bytes = make_sample_pdf_bytes()
+    pdf_res = client.post(
+        "/api/v2/ocr",
+        files=[("files", ("scan.pdf", pdf_bytes, "application/pdf"))],
+        data={"options": json.dumps({"language": "fra+eng", "outputFormat": "searchable-pdf", "deskew": True})},
+    )
+    assert pdf_res.status_code == 200
+    assert pdf_res.content.startswith(b"%PDF-")
+    report = json.loads(pdf_res.headers["x-folio-report"])
+    assert report["zeroRetentionPurged"] is True
+    assert report["outputFormat"] == "searchable-pdf"
+
+    md_res = client.post(
+        "/api/v2/ocr",
+        files=[("files", ("scan.pdf", pdf_bytes, "application/pdf"))],
+        data={"options": json.dumps({"language": "fra+eng", "outputFormat": "markdown", "deskew": False})},
+    )
+    assert md_res.status_code == 200
+    assert b"# Extraction OCR" in md_res.content
+

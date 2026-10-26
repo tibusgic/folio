@@ -2,6 +2,7 @@ import type { Skill } from '@folio/skills-core';
 import { markdownLatexSkill, markdownToLatex, escapeLatex, assertSafeLatexFragment, type LatexRenderOptions, type LatexBundle } from './latex.ts';
 import { compressSkill } from './compress.ts';
 import { encryptSkill, unlockSkill } from './encrypt.ts';
+import { ocrSkill } from './ocr.ts';
 import { setRemoteApiBase, getRemoteApiBase, callRemoteSkill } from './transport.ts';
 
 export const remoteSkills: readonly Skill<any>[] = [
@@ -9,6 +10,7 @@ export const remoteSkills: readonly Skill<any>[] = [
   compressSkill,
   encryptSkill,
   unlockSkill,
+  ocrSkill,
 ];
 
 export {
@@ -19,6 +21,7 @@ export {
   compressSkill,
   encryptSkill,
   unlockSkill,
+  ocrSkill,
   setRemoteApiBase,
   getRemoteApiBase,
   callRemoteSkill,

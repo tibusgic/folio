@@ -18,6 +18,7 @@ export interface PageThumbItem {
   readonly fileName: string;
   readonly pageNumber: number;
   readonly objectUrl: string;
+  readonly blank?: boolean;
   rotate: 0 | 90 | 180 | 270;
 }
 
@@ -115,7 +116,20 @@ export function duplicatePageThumbItem(source: PageThumbItem): PageThumbItem {
     fileName: source.fileName,
     pageNumber: source.pageNumber,
     objectUrl: source.objectUrl,
+    ...(source.blank ? { blank: true } : {}),
     rotate: source.rotate,
+  };
+}
+
+export function createBlankPageThumbItem(pageNumber = 1): PageThumbItem {
+  return {
+    id: `blank-${pageNumber}-${Math.random().toString(36).slice(2, 7)}`,
+    fileIndex: -1,
+    fileName: 'Page blanche (intercalaire)',
+    pageNumber,
+    objectUrl: '',
+    blank: true,
+    rotate: 0,
   };
 }
 
