@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 from app.security import (
     MAX_UPLOAD_BYTES,
     ephemeral_workdir,
+    extract_zip_safely,
     pick_ramdisk_base,
     sanitize_filename,
     stream_upload_checked,
@@ -204,6 +205,45 @@ async def unlock_endpoint(
     return build_pdf_response(pdf_bytes, f"{stem}-deverrouille.pdf", {**report, "inputSha256": in_sha})
 
 
+def _fallback_md_to_tex(md_text: str, title: str) -> str:
+    """Convert raw Markdown (including `![Légende](image.png)`) into LaTeX if generatedTex wasn't supplied."""
+    import re as _re
+
+    body_lines: list[str] = []
+    for raw_ln in md_text.splitlines():
+        s = raw_ln.strip()
+        img_m = _re.match(r"^!\[([^\]]*)\]\(([^)\n]+)\)\s*$", s)
+        if img_m:
+            alt, target = img_m.group(1).strip(), img_m.group(2).strip().split()[0]
+            body_lines.append("\\begin{figure}[H]")
+            body_lines.append("  \\centering")
+            body_lines.append(f"  \\includegraphics[width=0.85\\linewidth]{{{target}}}")
+            if alt:
+                body_lines.append(f"  \\caption{{{alt}}}")
+            body_lines.append("\\end{figure}")
+        elif s.startswith("# "):
+            body_lines.append(f"\\section{{{s[2:].strip()}}}")
+        elif s.startswith("## "):
+            body_lines.append(f"\\subsection{{{s[3:].strip()}}}")
+        elif s.startswith("### "):
+            body_lines.append(f"\\subsubsection{{{s[4:].strip()}}}")
+        else:
+            body_lines.append(raw_ln)
+
+    return (
+        "\\documentclass[11pt,a4paper]{article}\n"
+        "\\usepackage[utf8]{inputenc}\n"
+        "\\usepackage[T1]{fontenc}\n"
+        "\\usepackage{graphicx}\n"
+        "\\usepackage{float}\n"
+        "\\usepackage{caption}\n"
+        "\\title{" + title + "}\n"
+        "\\begin{document}\n\\maketitle\n"
+        + "\n".join(body_lines)
+        + "\n\\end{document}\n"
+    )
+
+
 @app.post("/api/v2/latex-pdf")
 async def latex_pdf_endpoint(
     files: list[UploadFile] = File(...),
@@ -215,27 +255,30 @@ async def latex_pdf_endpoint(
     with ephemeral_workdir("folio_latex_") as workdir:
         bib_content: str | None = None
         md_filename = "publication"
+        candidate_docs: list[Path] = []
 
         for upload in files:
             fname = sanitize_filename(upload.filename, "input.md")
             dest = workdir / fname
-            await stream_upload_checked(upload, dest, expect_pdf=False, max_bytes=15 * 1024 * 1024)
-            if fname.lower().endswith(".bib"):
-                bib_content = dest.read_text(encoding="utf-8", errors="replace")
-            elif fname.lower().endswith((".md", ".markdown", ".tex")):
-                md_filename = fname.rsplit(".", 1)[0]
+            await stream_upload_checked(upload, dest, expect_pdf=False, max_bytes=25 * 1024 * 1024)
+            if fname.lower().endswith(".zip"):
+                extracted = extract_zip_safely(dest, workdir)
+                candidate_docs.extend(extracted)
+            else:
+                candidate_docs.append(dest)
+
+        for doc_path in candidate_docs:
+            fname_lower = doc_path.name.lower()
+            if fname_lower.endswith(".bib"):
+                bib_content = doc_path.read_text(encoding="utf-8", errors="replace")
+            elif fname_lower.endswith((".md", ".markdown", ".tex")):
+                md_filename = doc_path.stem
                 if not generated_tex:
-                    raw_text = dest.read_text(encoding="utf-8", errors="replace")
-                    if fname.lower().endswith(".tex"):
+                    raw_text = doc_path.read_text(encoding="utf-8", errors="replace")
+                    if fname_lower.endswith(".tex"):
                         generated_tex = raw_text
                     else:
-                        generated_tex = (
-                            "\\documentclass[11pt,a4paper]{article}\n"
-                            "\\title{" + md_filename + "}\n"
-                            "\\begin{document}\n\\maketitle\n"
-                            + raw_text
-                            + "\n\\end{document}\n"
-                        )
+                        generated_tex = _fallback_md_to_tex(raw_text, md_filename)
 
         if not generated_tex:
             raise HTTPException(

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { zipSync } from 'fflate';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { MIME, runSkill } from '@folio/skills-core';
+import { MIME, runSkill, uint8ToBase64 } from '@folio/skills-core';
 import {
   analyzePages,
   assembleSkill,
@@ -198,6 +199,49 @@ $$
     expect(html).toContain('<math');
     expect(html).toContain('break-inside: avoid');
     expect(html).not.toContain('<script>alert("xss")</script>');
+  });
+
+  it('preloads images from deposited files, .zip archives and Base64 Data URIs into <figure>/<figcaption> in md.pdf', async () => {
+    const b64 = uint8ToBase64(ONE_BY_ONE_PNG);
+    const mdSource = `# Architecture Illustrée
+
+![Schéma du pipeline local](./images/pipeline.png)
+
+![Capture associée manuellement](alias-custom.png)
+
+![Badge encodé en Base64](data:image/png;base64,${b64})
+`;
+    const zipBytes = zipSync({
+      'projet/note.md': new TextEncoder().encode(mdSource),
+      'projet/images/pipeline.png': ONE_BY_ONE_PNG,
+    });
+
+    const res = await runSkill(
+      markdownPrintSkill,
+      [
+        { name: 'archive.zip', mime: MIME.zip, bytes: zipBytes },
+        { name: 'fichier-reel-depose.png', mime: MIME.png, bytes: ONE_BY_ONE_PNG },
+      ],
+      {
+        paper: 'A4',
+        theme: 'editorial',
+        imageMappings: { 'alias-custom.png': 'fichier-reel-depose.png' },
+      },
+    );
+
+    const html = new TextDecoder().decode(res.files[0]!.bytes);
+    // Strict print CSS rules for images
+    expect(html).toContain('max-width: 100%; height: auto; break-inside: avoid');
+    // Every ![Ma légende](...) transformed into <figure class="image-figure"> + <figcaption>
+    expect(html).toContain('<figure class="image-figure"><img src="data:image/png;base64,');
+    expect(html).toContain('<figcaption>Schéma du pipeline local</figcaption></figure>');
+    expect(html).toContain('<figcaption>Capture associée manuellement</figcaption></figure>');
+    expect(html).toContain('<figcaption>Badge encodé en Base64</figcaption></figure>');
+    // No invalid <p><figure> nesting
+    expect(html).not.toContain('<p><figure');
+    expect(res.record.report?.images).toBe(3);
+    expect(res.record.report?.resolvedImages).toBe(3);
+    expect(res.record.report?.missingImages).toBe(0);
   });
 
   it('inserts blank pages in assembleSkill when plan contains blank entries', async () => {

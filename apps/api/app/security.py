@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import ipaddress
 import os
 import re
 import secrets
 import shutil
+import socket
 import tempfile
+import urllib.parse
+import zipfile
 from pathlib import Path
 from typing import Iterator
 
@@ -140,3 +144,176 @@ def assert_safe_latex(tex_source: str) -> None:
 
 def random_owner_password() -> str:
     return secrets.token_urlsafe(24)
+
+
+def _is_forbidden_ip(ip_str: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+        or (isinstance(addr, ipaddress.IPv4Address) and addr in ipaddress.ip_network("100.64.0.0/10"))
+    )
+
+
+def assert_safe_remote_url(raw_url: str, *, resolve_dns: bool = True) -> str:
+    """
+    Validate a remote image URL against SSRF attacks.
+    Blocks non-HTTP(S) schemes, credentials, localhost/internal domains,
+    and private/loopback/link-local/metadata IPv4 & IPv6 addresses.
+    """
+    try:
+        parsed = urllib.parse.urlparse(raw_url.strip())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "FORBIDDEN_CONTENT", "message": "URL d'image distante invalide."},
+        ) from exc
+
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "FORBIDDEN_CONTENT",
+                "message": f"Schéma d'URL interdit par la protection SSRF : {parsed.scheme}",
+            },
+        )
+
+    if parsed.username or parsed.password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "FORBIDDEN_CONTENT", "message": "Identifiants dans l'URL interdits."},
+        )
+
+    host = (parsed.hostname or "").strip().lower().strip("[]")
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "FORBIDDEN_CONTENT", "message": "Hôte manquant dans l'URL distante."},
+        )
+
+    if (
+        host == "localhost"
+        or host.endswith(".localhost")
+        or host.endswith(".local")
+        or host.endswith(".internal")
+        or host in ("metadata.google.internal", "metadata", "instance-data")
+        or re.match(r"^(?:0x[0-9a-f]+|\d+)$", host, re.IGNORECASE)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "FORBIDDEN_CONTENT",
+                "message": f"Hôte interne ou local bloqué par la protection SSRF : {host}",
+            },
+        )
+
+    # Check literal IP address if host is an IP
+    try:
+        ipaddress.ip_address(host)
+        is_literal_ip = True
+    except ValueError:
+        is_literal_ip = False
+
+    if is_literal_ip and _is_forbidden_ip(host):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "FORBIDDEN_CONTENT",
+                "message": f"Adresse IP privée ou réservée bloquée par la protection SSRF : {host}",
+            },
+        )
+
+    if resolve_dns and not is_literal_ip:
+        try:
+            infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+        except socket.gaierror:
+            infos = []
+        for info in infos:
+            sockaddr = info[4]
+            ip_candidate = str(sockaddr[0])
+            if _is_forbidden_ip(ip_candidate):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "FORBIDDEN_CONTENT",
+                        "message": f"Résolution DNS vers une IP interne bloquée par la protection SSRF : {ip_candidate}",
+                    },
+                )
+
+    return parsed.geturl()
+
+
+ALLOWED_ZIP_EXTENSIONS = {".md", ".markdown", ".tex", ".bib", ".png", ".jpg", ".jpeg", ".webp", ".svg"}
+
+
+def extract_zip_safely(
+    zip_path: Path,
+    workdir: Path,
+    max_total_bytes: int = 75 * 1024 * 1024,
+) -> list[Path]:
+    """
+    Safely unpack a .zip archive into `workdir`, guarding against Zip Slip
+    and decompression bombs. Also mirrors nested images to `workdir / basename`
+    so both relative paths (`./images/fig.png`) and flat names (`fig.png`) resolve.
+    """
+    extracted: list[Path] = []
+    total_uncompressed = 0
+    workdir_resolved = workdir.resolve()
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                raw_name = member.filename.replace("\\", "/")
+                parts = [p for p in raw_name.split("/") if p and p not in (".", "..")]
+                if not parts:
+                    continue
+                if any(p == "__MACOSX" or p.startswith(".") for p in parts) or parts[-1] == "Thumbs.db":
+                    continue
+
+                ext = os.path.splitext(parts[-1])[1].lower()
+                if ext not in ALLOWED_ZIP_EXTENSIONS:
+                    continue
+
+                total_uncompressed += member.file_size
+                if total_uncompressed > max_total_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail={
+                            "code": "INPUT_TOO_LARGE",
+                            "message": "L'archive ZIP dépasse la taille maximale décompressée.",
+                        },
+                    )
+
+                safe_parts = [sanitize_filename(p, "asset") for p in parts]
+                rel_dest = (workdir / Path(*safe_parts)).resolve()
+                if not rel_dest.is_relative_to(workdir_resolved):
+                    continue
+
+                rel_dest.parent.mkdir(parents=True, exist_ok=True)
+                data = zf.read(member)
+                rel_dest.write_bytes(data)
+                extracted.append(rel_dest)
+
+                flat_dest = workdir / safe_parts[-1]
+                if flat_dest != rel_dest and not flat_dest.exists():
+                    flat_dest.write_bytes(data)
+    except HTTPException:
+        raise
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "CORRUPT_INPUT", "message": "Archive ZIP invalide ou corrompue."},
+        ) from exc
+
+    return extracted

@@ -178,6 +178,32 @@
             </div>
             <div id="file-list" class="file-table" role="list"></div>
           </div>
+
+          <!-- Dedicated Markdown Images & Assets Association Panel (Visible on md.pdf & md.latex-pdf) -->
+          <div id="md-images-panel" class="panel md-images-panel" aria-label="Association des images au document Markdown" hidden>
+            <input
+              id="associate-images-input"
+              type="file"
+              class="sr-only"
+              accept="image/png,image/jpeg,image/webp,image/svg+xml,application/zip,.png,.jpg,.jpeg,.webp,.svg,.zip"
+              multiple
+            />
+            <div class="panel__bar">
+              <div class="panel__title-group">
+                <span class="mono-label">IMAGES &amp; ASSETS DU DOCUMENT (.MD)</span>
+                <span id="md-images-summary-badge" class="mono-tag">0 image</span>
+              </div>
+              <div class="panel__actions">
+                <button type="button" id="associate-images-btn" class="btn btn--primary btn--sm">
+                  + Associer des images au document
+                </button>
+              </div>
+            </div>
+            <div id="md-images-drop-banner" class="md-images-drop-banner">
+              <span>Déposez vos images (<code>.png</code>, <code>.jpg</code>, <code>.webp</code>, <code>.svg</code>) ou une archive <code>.zip</code> pour résoudre les références <code>![Légende](chemin)</code> du fichier <code>.md</code>.</span>
+            </div>
+            <div id="md-images-list" class="md-images-list" role="list"></div>
+          </div>
         </section>
 
         <!-- Multi-page Interactive Preview & Touch Reorder Grid -->

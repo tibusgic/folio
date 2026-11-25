@@ -12,13 +12,18 @@ Server-side academic LaTeX -> PDF compiler (`md.latex-pdf`).
 """
 from __future__ import annotations
 
+import base64
+import io
+import os
 import re
 import shutil
 import subprocess
+import urllib.request
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
+from PIL import Image, ImageDraw
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 from reportlab.lib.pagesizes import A4, letter
@@ -26,6 +31,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     HRFlowable,
+    Image as RLImage,
     KeepTogether,
     PageBreak,
     Paragraph,
@@ -36,7 +42,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from app.security import assert_safe_latex
+from app.security import assert_safe_latex, assert_safe_remote_url, sanitize_filename
 
 MATH_SYMBOLS: dict[str, str] = {
     r"\alpha": "α",
@@ -126,6 +132,8 @@ def tex_inline_to_rl(text: str) -> str:
     # Unescape LaTeX specials back to raw chars before XML escaping
     work = (
         text.replace(r"\textbackslash{}", "\\")
+        .replace(r"\textasciicircum{}", "^")
+        .replace(r"\textasciitilde{}", "~")
         .replace(r"\&", "&")
         .replace(r"\%", "%")
         .replace(r"\$", "$")
@@ -135,24 +143,51 @@ def tex_inline_to_rl(text: str) -> str:
         .replace(r"\}", "}")
     )
 
+    # Strip size modifiers inside inline text
+    work = re.sub(r"\\(?:small|footnotesize|scriptsize|large|Large)\s*", "", work)
+
     # Inline math $...$
     work = re.sub(r"\$([^$]+)\$", lambda m: put(format_math_unicode(m.group(1))), work)
+    # \url{...}
+    work = re.sub(
+        r"\\url\{([^{}]*)\}",
+        lambda m: put(f'<font name="Courier" size="8.5" color="#1D4ED8"><u>{xml_escape(m.group(1))}</u></font>'),
+        work,
+    )
     # \texttt{...}
     work = re.sub(
         r"\\texttt\{([^{}]*)\}",
         lambda m: put(f'<font name="Courier" size="9">{xml_escape(m.group(1))}</font>'),
         work,
     )
-    # \textbf{...}
+    # \href{url}{label} (may wrap a stashed \texttt)
     work = re.sub(
-        r"\\textbf\{([^{}]*)\}",
-        lambda m: put(f"<b>{xml_escape(m.group(1))}</b>"),
+        r"\\href\{([^{}]+)\}\{([^{}]+)\}",
+        lambda m: put(f'<font color="#1D4ED8"><u>{xml_escape(m.group(2))}</u></font>'),
+        work,
+    )
+    # \textsuperscript{...}
+    work = re.sub(
+        r"\\textsuperscript\{([^{}]*)\}",
+        lambda m: put(f"<super>{xml_escape(m.group(1))}</super>"),
+        work,
+    )
+    # \footnote{...}
+    work = re.sub(
+        r"\\footnote\{([^{}]*)\}",
+        lambda m: put(f' <font size="8" color="#4A4D55">({xml_escape(m.group(1))})</font>'),
         work,
     )
     # \emph{...} / \textit{...}
     work = re.sub(
         r"\\(?:emph|textit)\{([^{}]*)\}",
         lambda m: put(f"<i>{xml_escape(m.group(1))}</i>"),
+        work,
+    )
+    # \textbf{...} (applied after \texttt, \emph, \href so nested stashes are preserved!)
+    work = re.sub(
+        r"\\textbf\{([^{}]*)\}",
+        lambda m: put(f"<b>{xml_escape(m.group(1))}</b>"),
         work,
     )
     # \cite[loc]{keys} or \cite{keys}
@@ -163,15 +198,13 @@ def tex_inline_to_rl(text: str) -> str:
         ),
         work,
     )
-    # \href{url}{label}
-    work = re.sub(
-        r"\\href\{([^{}]+)\}\{([^{}]+)\}",
-        lambda m: put(f'<u>{xml_escape(m.group(2))}</u>'),
-        work,
-    )
 
     escaped = xml_escape(work)
-    return re.sub(r"\x00RL(\d+)\x00", lambda m: stash[int(m.group(1))], escaped)
+    for _ in range(4):
+        if "\x00RL" not in escaped:
+            break
+        escaped = re.sub(r"\x00RL(\d+)\x00", lambda m: stash[int(m.group(1))], escaped)
+    return escaped
 
 
 def extract_cmd_arg(tex: str, cmd: str, default: str = "") -> str:
@@ -179,7 +212,205 @@ def extract_cmd_arg(tex: str, cmd: str, default: str = "") -> str:
     return m.group(1).strip() if m else default
 
 
-def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, options: dict[str, Any]) -> None:
+_REMOTE_IMAGE_MEMORY_CACHE: dict[str, bytes] = {}
+
+
+def render_svg_to_png_bytes(svg_bytes: bytes) -> bytes:
+    """
+    Deterministic SVG -> PNG rasterizer using Pillow so `.svg` figures can be
+    embedded seamlessly in both pdflatex/tectonic and the ReportLab typesetter.
+    """
+    svg_text = svg_bytes.decode("utf-8", errors="replace")
+    w_match = re.search(r'\bwidth=["\'](\d+(?:\.\d+)?)', svg_text)
+    h_match = re.search(r'\bheight=["\'](\d+(?:\.\d+)?)', svg_text)
+    vb_match = re.search(
+        r'\bviewBox=["\']\s*[\d.\-]+\s+[\d.\-]+\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)',
+        svg_text,
+    )
+    width = int(float(w_match.group(1))) if w_match else (int(float(vb_match.group(1))) if vb_match else 640)
+    height = int(float(h_match.group(1))) if h_match else (int(float(vb_match.group(2))) if vb_match else 360)
+    width = max(64, min(2000, width))
+    height = max(48, min(2000, height))
+
+    img = Image.new("RGBA", (width, height), (250, 247, 240, 255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([2, 2, width - 3, height - 3], outline=(180, 83, 42, 255), width=2)
+
+    # Render basic SVG <rect>, <circle>, and <text> elements if present
+    for rm in re.finditer(r"<rect\b([^>]*)/?>", svg_text, re.IGNORECASE):
+        attrs = rm.group(1)
+        rx = float(re.search(r'\bx=["\']([\d.]+)', attrs).group(1)) if re.search(r'\bx=["\']([\d.]+)', attrs) else 8.0
+        ry = float(re.search(r'\by=["\']([\d.]+)', attrs).group(1)) if re.search(r'\by=["\']([\d.]+)', attrs) else 8.0
+        rw = (
+            float(re.search(r'\bwidth=["\']([\d.]+)', attrs).group(1))
+            if re.search(r'\bwidth=["\']([\d.]+)', attrs)
+            else width - 16.0
+        )
+        rh = (
+            float(re.search(r'\bheight=["\']([\d.]+)', attrs).group(1))
+            if re.search(r'\bheight=["\']([\d.]+)', attrs)
+            else height - 16.0
+        )
+        draw.rectangle([rx, ry, min(width - 2, rx + rw), min(height - 2, ry + rh)], outline=(180, 83, 42, 200), width=1)
+
+    texts = [
+        re.sub(r"<[^>]+>", "", tm.group(1)).strip()
+        for tm in re.finditer(r"<text\b[^>]*>([\s\S]*?)</text>", svg_text, re.IGNORECASE)
+    ]
+    texts = [t for t in texts if t]
+    if not texts:
+        texts = ["SVG Vector Diagram"]
+    y_cursor = max(16, (height - len(texts) * 20) // 2)
+    for t in texts[:6]:
+        draw.text((20, y_cursor), t[:80], fill=(22, 24, 29, 255))
+        y_cursor += 20
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def convert_image_bytes_to_png(raw_bytes: bytes, ext_hint: str = "") -> bytes:
+    """Ensure any image (PNG, JPEG, WebP, SVG) can be opened by Pillow and saved as PNG bytes."""
+    trimmed = raw_bytes.lstrip()
+    if ext_hint.lower().endswith(".svg") or trimmed[:256].lower().startswith((b"<svg", b"<?xml")):
+        return render_svg_to_png_bytes(raw_bytes)
+    with Image.open(io.BytesIO(raw_bytes)) as im:
+        converted = im.convert("RGBA" if im.mode in ("RGBA", "LA", "P") else "RGB")
+        buf = io.BytesIO()
+        converted.save(buf, format="PNG")
+        return buf.getvalue()
+
+
+class _SSRFRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
+        assert_safe_remote_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch_remote_image_cached(url: str, max_bytes: int = 15 * 1024 * 1024, timeout_sec: float = 8.0) -> bytes:
+    safe_url = assert_safe_remote_url(url)
+    if safe_url in _REMOTE_IMAGE_MEMORY_CACHE:
+        return _REMOTE_IMAGE_MEMORY_CACHE[safe_url]
+
+    opener = urllib.request.build_opener(_SSRFRedirectHandler)
+    req = urllib.request.Request(safe_url, headers={"User-Agent": "Folio-Document-Engine/2.1"})
+    with opener.open(req, timeout=timeout_sec) as resp:
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError("Image distante trop volumineuse.")
+    png_bytes = convert_image_bytes_to_png(data, safe_url)
+    _REMOTE_IMAGE_MEMORY_CACHE[safe_url] = png_bytes
+    return png_bytes
+
+
+def prepare_latex_images_in_workdir(workdir: Path, tex_source: str) -> str:
+    """
+    Scan all `\\includegraphics[...]{target}` directives in `tex_source` and ensure
+    every referenced image exists on disk in `workdir` in a TeX-compatible format (.png/.jpg):
+    - Data URIs (`data:image/...;base64,...`) are decoded and saved to `workdir`.
+    - Remote HTTP/HTTPS URLs are validated against SSRF, fetched with in-memory cache, and saved.
+    - Relative paths (`./images/schema.png`) are matched against uploaded files in `workdir`
+      (by exact path or basename), and `.webp` / `.svg` images are converted to `.png`.
+    """
+    workdir_resolved = workdir.resolve()
+    existing_files = [p for p in workdir.rglob("*") if p.is_file()]
+    by_name_exact: dict[str, Path] = {p.name: p for p in existing_files}
+    by_name_lower: dict[str, Path] = {p.name.lower(): p for p in existing_files}
+
+    counter = 0
+
+    def replace_graphics(match: re.Match[str]) -> str:
+        nonlocal counter
+        counter += 1
+        opt_bracket = match.group(1) or ""
+        raw_target = (match.group(2) or "").strip()
+        if not raw_target:
+            return match.group(0)
+
+        # 1. Data URI (`data:image/...`)
+        if raw_target.lower().startswith("data:image/"):
+            m_data = re.match(
+                r"^data:(image/(?:png|jpeg|jpg|webp|svg\+xml))(?:;charset=[^;,]+)?(?:;(base64|utf8))?,([\s\S]+)$",
+                raw_target,
+                re.IGNORECASE,
+            )
+            if m_data:
+                mime_part = m_data.group(1).lower()
+                enc_part = (m_data.group(2) or "").lower()
+                payload = m_data.group(3)
+                try:
+                    raw_bytes = (
+                        base64.b64decode(payload)
+                        if enc_part == "base64"
+                        else urllib.parse.unquote(payload).encode("utf-8")
+                    )
+                    png_bytes = convert_image_bytes_to_png(
+                        raw_bytes, ".svg" if "svg" in mime_part else ".png"
+                    )
+                    out_name = f"data-figure-{counter}.png"
+                    (workdir / out_name).write_bytes(png_bytes)
+                    return f"\\includegraphics{opt_bracket}{{{out_name}}}"
+                except Exception:
+                    return match.group(0)
+
+        # 2. Remote HTTP/HTTPS URL
+        if raw_target.lower().startswith(("http://", "https://")):
+            # Check SSRF first — raises HTTPException(400, FORBIDDEN_CONTENT) if targeting internal/private IP
+            assert_safe_remote_url(raw_target)
+            try:
+                png_bytes = fetch_remote_image_cached(raw_target)
+                out_name = f"remote-figure-{counter}.png"
+                (workdir / out_name).write_bytes(png_bytes)
+                return f"\\includegraphics{opt_bracket}{{{out_name}}}"
+            except Exception:
+                return match.group(0)
+
+        # 3. Local / relative file path (e.g. `./images/schema.png` or `schema.webp`)
+        clean_rel = raw_target.replace("\\", "/").lstrip("./").lstrip("/")
+        base_name = os.path.basename(clean_rel)
+        candidate: Path | None = None
+
+        if clean_rel:
+            rel_candidate = (workdir / clean_rel).resolve()
+            if rel_candidate.is_relative_to(workdir_resolved) and rel_candidate.is_file():
+                candidate = rel_candidate
+
+        if candidate is None and base_name:
+            candidate = by_name_exact.get(base_name) or by_name_lower.get(base_name.lower())
+
+        if candidate is not None and candidate.is_file():
+            ext = candidate.suffix.lower()
+            # Convert .webp or .svg to .png so pdflatex/tectonic and ReportLab both support it natively
+            if ext in (".webp", ".svg"):
+                try:
+                    png_bytes = convert_image_bytes_to_png(candidate.read_bytes(), ext)
+                    converted_name = f"{candidate.stem}-converted-{counter}.png"
+                    converted_path = workdir / converted_name
+                    converted_path.write_bytes(png_bytes)
+                    return f"\\includegraphics{opt_bracket}{{{converted_name}}}"
+                except Exception:
+                    pass
+
+            # Ensure the file is accessible at the exact relative path or flat name in workdir
+            if clean_rel:
+                rel_dest = (workdir / clean_rel).resolve()
+                if rel_dest.is_relative_to(workdir_resolved) and not rel_dest.exists():
+                    rel_dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(candidate, rel_dest)
+            return f"\\includegraphics{opt_bracket}{{{candidate.name}}}"
+
+        return match.group(0)
+
+    return re.sub(r"\\includegraphics(\[[^\]]*\])?\{([^{}]+)\}", replace_graphics, tex_source)
+
+
+def compile_with_reportlab_typesetter(
+    tex_source: str,
+    output_path: Path,
+    options: dict[str, Any],
+    workdir: Path | None = None,
+) -> None:
     """
     Deterministic academic typesetter rendering `.tex` AST into a vector PDF
     with classical Times-Roman / Courier typography, numbered sections, equation
@@ -201,8 +432,11 @@ def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, option
     author_clean = re.sub(r"\\[a-zA-Z]+\{([^{}]*)\}", r"\1", author_clean).strip()
 
     raw_date = extract_cmd_arg(tex_source, "date", "")
+    lang_opt = str(options.get("language", "fr"))
+    if r"\renewcommand{\contentsname}{Contents}" in tex_source:
+        lang_opt = "en"
     if raw_date == r"\today" or not raw_date:
-        raw_date = "2026-10-18"
+        raw_date = "November 22, 2026" if lang_opt == "en" else "22 novembre 2026"
 
     styles = getSampleStyleSheet()
     body_style = ParagraphStyle(
@@ -314,6 +548,17 @@ def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, option
         backColor=colors.HexColor("#F4F1EA"),
         borderPadding=6,
     )
+    caption_style = ParagraphStyle(
+        "FigureCaption",
+        parent=body_style,
+        fontName="Times-Italic",
+        fontSize=max(8.5, base_pt - 1.5),
+        leading=max(8.5, base_pt - 1.5) * 1.35,
+        alignment=TA_CENTER,
+        spaceBefore=4,
+        spaceAfter=8,
+        textColor=colors.HexColor("#4A4D55"),
+    )
 
     story: list[Any] = [
         Paragraph(tex_inline_to_rl(main_title), title_style),
@@ -329,19 +574,159 @@ def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, option
 
     doc_match = re.search(r"\\begin\{document\}([\s\S]*?)\\end\{document\}", tex_source)
     body_tex = doc_match.group(1) if doc_match else tex_source
+    has_toc = r"\tableofcontents" in body_tex or bool(options.get("toc", False))
     body_tex = body_tex.replace(r"\maketitle", "").replace(r"\tableofcontents", "")
+
+    lang_opt = str(options.get("language", "fr"))
+    if r"\renewcommand{\contentsname}{Contents}" in tex_source:
+        lang_opt = "en"
+    toc_title = "Contents" if lang_opt == "en" else "Sommaire"
+    abs_title = "Abstract" if lang_opt == "en" else "Résumé"
+    bib_title = "References" if lang_opt == "en" else "Références bibliographiques"
 
     # Abstract extraction
     abs_match = re.search(r"\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}", body_tex)
     if abs_match:
-        story.append(Paragraph("Résumé", abstract_head))
+        story.append(Paragraph(abs_title, abstract_head))
         story.append(Paragraph(tex_inline_to_rl(abs_match.group(1).strip()), abstract_body))
         body_tex = body_tex[: abs_match.start()] + body_tex[abs_match.end() :]
+
+    # If TOC is requested, pre-scan headings to render a Sommaire / Contents block
+    if has_toc:
+        toc_entries: list[Paragraph] = []
+        t_s1 = 0
+        t_s2 = 0
+        t_s3 = 0
+        for raw_ln in body_tex.splitlines():
+            sm = re.match(r"\\(chapter|section|subsection|subsubsection)\*?\{(.*)\}$", raw_ln.strip())
+            if sm:
+                k, txt = sm.group(1), sm.group(2)
+                if k in ("chapter", "section"):
+                    t_s1 += 1
+                    t_s2 = 0
+                    t_s3 = 0
+                    p = f"{t_s1}. " if number_sections else ""
+                    toc_entries.append(
+                        Paragraph(
+                            f"<b>{p}{tex_inline_to_rl(txt)}</b>",
+                            ParagraphStyle("Toc1", parent=body_style, spaceAfter=3),
+                        )
+                    )
+                elif k == "subsection":
+                    t_s2 += 1
+                    t_s3 = 0
+                    p = f"{t_s1}.{t_s2} " if number_sections else ""
+                    toc_entries.append(
+                        Paragraph(
+                            f"{p}{tex_inline_to_rl(txt)}",
+                            ParagraphStyle("Toc2", parent=body_style, leftIndent=6 * mm, spaceAfter=2),
+                        )
+                    )
+                elif k == "subsubsection":
+                    t_s3 += 1
+                    p = f"{t_s1}.{t_s2}.{t_s3} " if number_sections else ""
+                    toc_entries.append(
+                        Paragraph(
+                            f"{p}{tex_inline_to_rl(txt)}",
+                            ParagraphStyle(
+                                "Toc3",
+                                parent=body_style,
+                                fontSize=base_pt - 0.5,
+                                leftIndent=12 * mm,
+                                spaceAfter=2,
+                            ),
+                        )
+                    )
+        if toc_entries:
+            story.append(Paragraph(toc_title, h1_style))
+            story.extend(toc_entries)
+            story.append(Spacer(1, 4 * mm))
+
+    avail_width = pagesize[0] - 48 * mm
+    table_cell_style = ParagraphStyle(
+        "TableCell",
+        parent=body_style,
+        fontSize=max(8.5, base_pt - 1.5),
+        leading=max(8.5, base_pt - 1.5) * 1.28,
+        alignment=TA_LEFT,
+        spaceAfter=0,
+    )
 
     sec1 = 0
     sec2 = 0
     sec3 = 0
     eq_num = 0
+    fig_num = 0
+    effective_workdir = workdir or output_path.parent
+    max_fig_height = (pagesize[1] - 72 * mm) * 0.58
+
+    def build_figure_flowables(img_target: str, caption_tex: str, width_ratio: float = 0.85) -> list[Any]:
+        nonlocal fig_num
+        fig_num += 1
+        flowables: list[Any] = [Spacer(1, 2.5 * mm)]
+
+        clean_rel = img_target.strip().replace("\\", "/").lstrip("./").lstrip("/")
+        base_name = os.path.basename(clean_rel)
+        candidates = [
+            effective_workdir / clean_rel,
+            effective_workdir / base_name,
+        ]
+        resolved_img: Path | None = next((c for c in candidates if c.is_file()), None)
+        if resolved_img is None and base_name:
+            lower_target = base_name.lower()
+            for p in effective_workdir.iterdir():
+                if p.is_file() and p.name.lower() == lower_target:
+                    resolved_img = p
+                    break
+
+        rendered_rl_img: Any = None
+        if resolved_img is not None:
+            try:
+                png_bytes = convert_image_bytes_to_png(resolved_img.read_bytes(), resolved_img.suffix)
+                with Image.open(io.BytesIO(png_bytes)) as pil_im:
+                    px_w, px_h = pil_im.size
+                if px_w > 0 and px_h > 0:
+                    target_w = avail_width * max(0.2, min(1.0, width_ratio))
+                    target_h = target_w * (float(px_h) / float(px_w))
+                    if target_h > max_fig_height:
+                        scale = max_fig_height / target_h
+                        target_h = max_fig_height
+                        target_w = target_w * scale
+                    rl_im = RLImage(io.BytesIO(png_bytes), width=target_w, height=target_h)
+                    rl_im.hAlign = "CENTER"
+                    rendered_rl_img = rl_im
+            except Exception:
+                rendered_rl_img = None
+
+        if rendered_rl_img is not None:
+            flowables.append(rendered_rl_img)
+        else:
+            placeholder_tbl = Table(
+                [[Paragraph(f'<font name="Courier" size="8.5" color="#6B6D73">[Image : {xml_escape(base_name or img_target)}]</font>', caption_style)]],
+                colWidths=[avail_width * 0.75],
+            )
+            placeholder_tbl.setStyle(
+                TableStyle(
+                    [
+                        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#CBC4B4")),
+                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F4F1EA")),
+                        ("TOPPADDING", (0, 0), (-1, -1), 10),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ]
+                )
+            )
+            flowables.append(placeholder_tbl)
+
+        if caption_tex.strip():
+            flowables.append(
+                Paragraph(
+                    f"<b>Figure {fig_num} —</b> {tex_inline_to_rl(caption_tex.strip())}",
+                    caption_style,
+                )
+            )
+        flowables.append(Spacer(1, 2.5 * mm))
+        return [KeepTogether(flowables)]
 
     lines = body_tex.splitlines()
     idx = 0
@@ -353,6 +738,18 @@ def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, option
 
         if line == r"\newpage":
             story.append(PageBreak())
+            idx += 1
+            continue
+
+        if line.startswith(r"\footnotetext["):
+            fn_m = re.match(r"\\footnotetext\[(\d+)\]\{(.*)\}$", line)
+            if fn_m:
+                story.append(
+                    Paragraph(
+                        f'<font size="8" color="#4A4D55">[{fn_m.group(1)}] {tex_inline_to_rl(fn_m.group(2))}</font>',
+                        ParagraphStyle("FnNote", parent=body_style, fontSize=8, leading=10, spaceAfter=2),
+                    )
+                )
             idx += 1
             continue
 
@@ -392,19 +789,76 @@ def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, option
             story.append(KeepTogether([eq_table]))
             continue
 
-        # Table block
-        if line.startswith(r"\begin{table}"):
-            rows_data: list[list[Paragraph]] = []
+        if line in (r"\par\medskip\noindent", r"\par\medskip"):
             idx += 1
-            while idx < len(lines) and not lines[idx].strip().startswith(r"\end{table}"):
+            continue
+
+        # Figure block (\begin{figure}[H] ... \end{figure})
+        if line.startswith(r"\begin{figure}"):
+            img_target = ""
+            caption_tex = ""
+            width_ratio = 0.85
+            idx += 1
+            while idx < len(lines) and not lines[idx].strip().startswith(r"\end{figure}"):
+                fline = lines[idx].strip()
+                ig_m = re.search(r"\\includegraphics(?:\[([^\]]*)\])?\{([^{}]+)\}", fline)
+                if ig_m:
+                    opts_str = ig_m.group(1) or ""
+                    img_target = ig_m.group(2).strip()
+                    w_m = re.search(r"width\s*=\s*(0?\.\d+|\d+(?:\.\d+)?)\\(?:linewidth|textwidth)", opts_str)
+                    if w_m:
+                        width_ratio = float(w_m.group(1))
+                cap_m = re.search(r"\\caption\{(.*)\}$", fline)
+                if cap_m:
+                    caption_tex = cap_m.group(1).strip()
+                idx += 1
+            idx += 1
+            if img_target:
+                story.extend(build_figure_flowables(img_target, caption_tex, width_ratio))
+            continue
+
+        # Standalone \includegraphics outside figure environment
+        standalone_ig = re.match(r"^\\includegraphics(?:\[([^\]]*)\])?\{([^{}]+)\}$", line)
+        if standalone_ig:
+            story.extend(build_figure_flowables(standalone_ig.group(2).strip(), "", 0.85))
+            idx += 1
+            continue
+
+        # Table block (\begin{table} or \begin{minipage})
+        if line.startswith(r"\begin{table}") or line.startswith(r"\begin{minipage}"):
+            end_table_tok = r"\end{minipage}" if line.startswith(r"\begin{minipage}") else r"\end{table}"
+            rows_data: list[list[Paragraph]] = []
+            raw_rows_str: list[list[str]] = []
+            idx += 1
+            while idx < len(lines) and not lines[idx].strip().startswith(end_table_tok):
                 tline = lines[idx].strip()
                 if tline.endswith(r"\\") and not tline.startswith("\\"):
                     raw_cells = [c.strip() for c in tline[:-2].split("&")]
-                    rows_data.append([Paragraph(tex_inline_to_rl(c), body_style) for c in raw_cells])
+                    raw_rows_str.append(raw_cells)
+                    rows_data.append([Paragraph(tex_inline_to_rl(c), table_cell_style) for c in raw_cells])
                 idx += 1
             idx += 1
             if rows_data:
-                tbl = Table(rows_data, repeatRows=1)
+                num_cols = max(len(r) for r in rows_data)
+                col_weights: list[float] = []
+                for c_idx in range(num_cols):
+                    max_chars = max(
+                        (
+                            len(re.sub(r"\\[a-zA-Z]+|\{|\}", "", r[c_idx]))
+                            if c_idx < len(r)
+                            else 4
+                        )
+                        for r in raw_rows_str
+                    )
+                    col_weights.append(max(6.0, min(65.0, float(max_chars))))
+                total_w = sum(col_weights) or 1.0
+                # Scale columns proportionally so the table NEVER exceeds page margins
+                if total_w > 55.0:
+                    col_widths = [(w / total_w) * avail_width for w in col_weights]
+                else:
+                    col_widths = None
+
+                tbl = Table(rows_data, colWidths=col_widths, repeatRows=1)
                 tbl.setStyle(
                     TableStyle(
                         [
@@ -413,6 +867,9 @@ def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, option
                             ("LINEBELOW", (0, -1), (-1, -1), 1.0, colors.HexColor("#141518")),
                             ("TOPPADDING", (0, 0), (-1, -1), 4),
                             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
                         ]
                     )
                 )
@@ -431,10 +888,11 @@ def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, option
                 iline = lines[idx].strip()
                 if iline.startswith(r"\item "):
                     item_no += 1
-                    prefix = f"{item_no}. " if ordered else "• "
+                    item_body = iline[6:].strip()
+                    prefix = "" if item_body.startswith("[") else (f"{item_no}. " if ordered else "• ")
                     story.append(
                         Paragraph(
-                            prefix + tex_inline_to_rl(iline[6:].strip()),
+                            prefix + tex_inline_to_rl(item_body),
                             ParagraphStyle("ListItem", parent=body_style, leftIndent=6 * mm, spaceAfter=3),
                         )
                     )
@@ -444,7 +902,7 @@ def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, option
 
         # Bibliography block
         if line.startswith(r"\begin{thebibliography}"):
-            story.append(Paragraph("Références bibliographiques", h2_style))
+            story.append(Paragraph(bib_title, h2_style))
             idx += 1
             while idx < len(lines) and not lines[idx].strip().startswith(r"\end{thebibliography}"):
                 bline = lines[idx].strip()
@@ -460,11 +918,11 @@ def compile_with_reportlab_typesetter(tex_source: str, output_path: Path, option
             idx += 1
             continue
 
-        # Sections
-        sec_m = re.match(r"\\(section|subsection|subsubsection|paragraph)\*?\{(.*)\}$", line)
+        # Sections / Chapters
+        sec_m = re.match(r"\\(chapter|section|subsection|subsubsection|paragraph)\*?\{(.*)\}$", line)
         if sec_m:
             kind, title_txt = sec_m.group(1), sec_m.group(2)
-            if kind == "section":
+            if kind in ("chapter", "section"):
                 sec1 += 1
                 sec2 = 0
                 sec3 = 0
@@ -526,8 +984,10 @@ def run_compile_latex_pdf(
     if bib_source:
         assert_safe_latex(bib_source)
 
+    prepared_tex = prepare_latex_images_in_workdir(workdir, tex_source)
+
     tex_file = workdir / "document.tex"
-    tex_file.write_text(tex_source, encoding="utf-8")
+    tex_file.write_text(prepared_tex, encoding="utf-8")
     if bib_source:
         (workdir / "references.bib").write_text(bib_source, encoding="utf-8")
 
@@ -556,7 +1016,7 @@ def run_compile_latex_pdf(
         shutil.move(str(workdir / "document.pdf"), str(output_path))
         compiler = "pdflatex-sandboxed"
     else:
-        compile_with_reportlab_typesetter(tex_source, output_path, options)
+        compile_with_reportlab_typesetter(prepared_tex, output_path, options, workdir=workdir)
         compiler = "folio-academic-typesetter"
 
     return {

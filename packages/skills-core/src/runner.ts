@@ -1,6 +1,6 @@
 import { SkillError } from './errors.ts';
 import { sha256Hex } from './hash.ts';
-import { sanitizeFileName, sniffMime } from './mime.ts';
+import { sanitizeFileName, sanitizeRelativePath, sniffMime } from './mime.ts';
 import type { DocumentFile, ExecutionSite, InputSpec, LogEntry, LogLevel, Skill, SkillContext } from './types.ts';
 
 export interface FileDigest {
@@ -64,7 +64,13 @@ export function validateInputs(files: readonly DocumentFile[], spec: InputSpec):
         detected: sniffed,
       });
     }
-    return { name: sanitizeFileName(file.name), mime: sniffed, bytes: file.bytes };
+    const rel = file.relativePath ? sanitizeRelativePath(file.relativePath) : '';
+    return {
+      name: sanitizeFileName(file.name),
+      mime: sniffed,
+      bytes: file.bytes,
+      ...(rel ? { relativePath: rel } : {}),
+    };
   });
 }
 

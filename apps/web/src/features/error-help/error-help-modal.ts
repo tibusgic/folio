@@ -17,6 +17,9 @@ const MIME_HUMAN_LABELS: Record<string, string> = {
   'application/x-bibtex': 'Bibliographie BibTeX UTF-8 (.bib)',
   'image/png': 'Image PNG (.png)',
   'image/jpeg': 'Image JPEG (.jpg, .jpeg)',
+  'image/webp': 'Image WebP (.webp)',
+  'image/svg+xml': 'Graphique vectoriel SVG (.svg)',
+  'application/zip': 'Archive ZIP contenant un .md et ses images (.zip)',
 };
 
 function formatAcceptedMimes(skill: Skill<any>): string {

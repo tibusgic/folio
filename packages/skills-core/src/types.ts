@@ -23,6 +23,8 @@ export interface DocumentFile {
   readonly name: string;
   readonly mime: string;
   readonly bytes: Uint8Array;
+  /** Optional relative path inside an archive or workspace (e.g. 'images/schema.png'). */
+  readonly relativePath?: string;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';

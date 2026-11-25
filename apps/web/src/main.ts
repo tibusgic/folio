@@ -4,14 +4,22 @@ import './design-system/tokens.css';
 
 import { zipSync } from 'fflate';
 import {
+  bytesToDataUri,
+  expandZipArchives,
+  extractMarkdownImageRefs,
   isFieldVisible,
+  isImageMime,
+  isSafeRemoteImageUrl,
+  matchImageRefToFile,
   MIME,
+  parseDataUriImage,
   runSkill,
   sanitizeFileName,
   sha256Hex,
   SkillError,
   SkillRegistry,
   sniffMime,
+  stem,
   type DocumentFile,
   type RunRecord,
   type RunResult,
@@ -70,6 +78,7 @@ let currentMode: UiMode = 'quick';
 let activeSkill: Skill<any> = registry.get('pdf.assemble');
 let isMoreSkillsOpen = false;
 let loadedFiles: LoadedFileEntry[] = [];
+let manualImageMappings: Record<string, string> = {};
 let pagePlanItems: PageThumbItem[] = [];
 let formController: FormController | null = null;
 let lastOutputs: DocumentFile[] = [];
@@ -117,6 +126,12 @@ const clearFilesBtn = document.getElementById('clear-files-btn') as HTMLButtonEl
 const fileTableWrap = document.getElementById('file-table-wrap') as HTMLElement;
 const fileSummaryCount = document.getElementById('file-summary-count') as HTMLElement;
 const fileListEl = document.getElementById('file-list') as HTMLElement;
+
+const mdImagesPanel = document.getElementById('md-images-panel') as HTMLElement;
+const associateImagesInput = document.getElementById('associate-images-input') as HTMLInputElement;
+const associateImagesBtn = document.getElementById('associate-images-btn') as HTMLButtonElement;
+const mdImagesSummaryBadge = document.getElementById('md-images-summary-badge') as HTMLElement;
+const mdImagesListEl = document.getElementById('md-images-list') as HTMLElement;
 
 const pageGridPanel = document.getElementById('page-grid-panel') as HTMLElement;
 const pageGridEl = document.getElementById('page-grid') as HTMLElement;
@@ -536,7 +551,11 @@ function updateActiveToolBanner(): void {
   fileInputEl.multiple = activeSkill.input.maxFiles > 1;
 }
 
-// File ingestion with strict magic-byte validation + SHA-256
+function isMarkdownPipeline(skillId: string): boolean {
+  return skillId === 'md.pdf' || skillId === 'md.latex-pdf';
+}
+
+// File ingestion with strict magic-byte validation + SHA-256 + local .zip expansion
 async function ingestBrowserFiles(rawList: FileList | File[]): Promise<void> {
   const incoming = Array.from(rawList);
   if (!incoming.length) return;
@@ -544,6 +563,8 @@ async function ingestBrowserFiles(rawList: FileList | File[]): Promise<void> {
   if (activeSkill.input.maxFiles === 1) {
     clearLoadedFiles();
   }
+
+  const isMdSkill = isMarkdownPipeline(activeSkill.id);
 
   for (const raw of incoming) {
     const bytes = new Uint8Array(await raw.arrayBuffer());
@@ -565,13 +586,44 @@ async function ingestBrowserFiles(rawList: FileList | File[]): Promise<void> {
       continue;
     }
 
+    // If a .zip archive is dropped on md.pdf or md.latex-pdf, decompress it 100% locally in memory
+    if (isMdSkill && detectedMime === MIME.zip) {
+      try {
+        const zipDoc: DocumentFile = {
+          name: sanitizeFileName(raw.name),
+          mime: MIME.zip,
+          bytes,
+        };
+        const expanded = expandZipArchives([zipDoc]);
+        if (expanded.files.length === 0) {
+          showToast(
+            'INPUT_TYPE',
+            `L’archive « ${zipDoc.name} » ne contient aucun fichier Markdown (.md) ou image valide.`,
+          );
+          continue;
+        }
+        for (const extractedDoc of expanded.files) {
+          if (!activeSkill.input.mimes.includes(extractedDoc.mime)) continue;
+          const sha256 = await sha256Hex(extractedDoc.bytes);
+          upsertLoadedFile(extractedDoc, sha256, isMdSkill);
+        }
+        continue;
+      } catch (err) {
+        const skillErr = SkillError.from(err);
+        showToast(skillErr.code, skillErr.message, skillErr.details);
+        continue;
+      }
+    }
+
+    const webkitRel = (raw as File & { webkitRelativePath?: string }).webkitRelativePath;
     const docFile: DocumentFile = {
       name: sanitizeFileName(raw.name),
       mime: detectedMime,
       bytes,
+      ...(webkitRel ? { relativePath: webkitRel } : {}),
     };
     const sha256 = await sha256Hex(bytes);
-    const fileIndex = loadedFiles.push({ file: docFile, sha256 }) - 1;
+    const fileIndex = upsertLoadedFile(docFile, sha256, isMdSkill);
 
     if (detectedMime === MIME.pdf) {
       const thumbs = await renderFileThumbnails(bytes, fileIndex, docFile.name);
@@ -585,8 +637,37 @@ async function ingestBrowserFiles(rawList: FileList | File[]): Promise<void> {
   syncMobileDockState();
 }
 
+function upsertLoadedFile(docFile: DocumentFile, sha256: string, isMdSkill: boolean): number {
+  if (isMdSkill) {
+    // Only one primary .md document at a time: replace existing .md while keeping associated images
+    if (docFile.mime === MIME.markdown) {
+      const existingMdIdx = loadedFiles.findIndex((e) => e.file.mime === MIME.markdown);
+      if (existingMdIdx !== -1) {
+        loadedFiles[existingMdIdx] = { file: docFile, sha256 };
+        return existingMdIdx;
+      }
+      // Put primary .md first in the list
+      loadedFiles.unshift({ file: docFile, sha256 });
+      return 0;
+    }
+    // If an image with the same relativePath or name is re-uploaded, update it in place
+    if (isImageMime(docFile.mime)) {
+      const key = docFile.relativePath ?? docFile.name;
+      const existingImgIdx = loadedFiles.findIndex(
+        (e) => isImageMime(e.file.mime) && (e.file.relativePath ?? e.file.name) === key,
+      );
+      if (existingImgIdx !== -1) {
+        loadedFiles[existingImgIdx] = { file: docFile, sha256 };
+        return existingImgIdx;
+      }
+    }
+  }
+  return loadedFiles.push({ file: docFile, sha256 }) - 1;
+}
+
 function clearLoadedFiles(): void {
   loadedFiles = [];
+  manualImageMappings = {};
   revokeThumbnails(pagePlanItems, []);
   pagePlanItems = [];
   renderLoadedFileTable();
@@ -670,6 +751,289 @@ function renderLoadedFileTable(): void {
     row.append(mainLine, metaLine);
     fileListEl.appendChild(row);
   });
+
+  renderMarkdownImagesAssociationPanel();
+}
+
+/**
+ * Interactive Markdown Images & Assets Association Panel for `md.pdf` and `md.latex-pdf`.
+ * - Automatically matches deposited / zip-extracted images to relative paths in the `.md`.
+ * - Provides a manual `<select>` selector for each image reference in `.md` (and for unmatched
+ *   deposited image files) so any file can be associated even when names differ.
+ */
+function renderMarkdownImagesAssociationPanel(): void {
+  const isMdSkill = isMarkdownPipeline(activeSkill.id);
+  const mdEntry = loadedFiles.find((e) => e.file.mime === MIME.markdown);
+  const imageEntries = loadedFiles.filter((e) => isImageMime(e.file.mime));
+
+  if (!isMdSkill || (!mdEntry && imageEntries.length === 0)) {
+    mdImagesPanel.hidden = true;
+    mdImagesListEl.replaceChildren();
+    return;
+  }
+
+  mdImagesPanel.hidden = false;
+  mdImagesListEl.replaceChildren();
+
+  const mdText = mdEntry ? new TextDecoder().decode(mdEntry.file.bytes) : '';
+  const refs = mdEntry ? extractMarkdownImageRefs(mdText) : [];
+  const imageFiles = imageEntries.map((e) => e.file);
+  const matchedImageFiles = new Set<DocumentFile>();
+
+  let resolvedTotal = 0;
+
+  if (refs.length === 0 && imageFiles.length === 0) {
+    mdImagesSummaryBadge.textContent = '0 image dans le .md';
+    const emptyMsg = document.createElement('div');
+    emptyMsg.className = 'md-image-empty';
+    emptyMsg.textContent =
+      'Aucune balise image ![Légende](chemin) détectée dans ce fichier Markdown. Cliquez sur « + Associer des images au document » pour déposer et insérer des illustrations.';
+    mdImagesListEl.appendChild(emptyMsg);
+    return;
+  }
+
+  refs.forEach((ref, idx) => {
+    const row = document.createElement('div');
+    row.className = 'md-image-row';
+    row.role = 'listitem';
+
+    const left = document.createElement('div');
+    left.className = 'md-image-row__left';
+
+    const thumb = document.createElement('div');
+    thumb.className = 'md-image-thumb';
+
+    const info = document.createElement('div');
+    info.className = 'md-image-row__info';
+
+    const topline = document.createElement('div');
+    topline.className = 'md-image-row__topline';
+
+    const pathEl = document.createElement('code');
+    pathEl.className = 'md-image-row__path';
+    pathEl.title = ref.src;
+    pathEl.textContent =
+      ref.kind === 'data-uri'
+        ? `data:image/… (${ref.src.length} car.)`
+        : truncateMiddle(ref.src, 38);
+
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'file-row__status';
+
+    const captionEl = document.createElement('span');
+    captionEl.className = 'md-image-row__caption';
+    captionEl.textContent = ref.alt ? `Légende : « ${ref.alt} »` : 'Sans légende (alt vide)';
+
+    const controls = document.createElement('div');
+    controls.className = 'md-image-row__controls';
+
+    if (ref.kind === 'data-uri') {
+      const parsed = parseDataUriImage(ref.src, idx + 1);
+      if (parsed) {
+        resolvedTotal++;
+        statusBadge.textContent = 'DATA URI (BASE64)';
+        const img = document.createElement('img');
+        img.src = parsed.dataUri;
+        img.alt = ref.alt || 'Aperçu Data URI';
+        thumb.appendChild(img);
+      } else {
+        statusBadge.className = 'file-row__status file-row__status--warn';
+        statusBadge.textContent = 'BASE64 INVALIDE';
+        thumb.textContent = 'ERR';
+      }
+    } else if (ref.kind === 'remote-url') {
+      const guard = isSafeRemoteImageUrl(ref.src);
+      if (guard.safe) {
+        resolvedTotal++;
+        statusBadge.textContent = 'DISTANTE (HTTP/S)';
+        thumb.textContent = 'URL';
+      } else {
+        statusBadge.className = 'file-row__status file-row__status--warn';
+        statusBadge.textContent = 'BLOQUÉE (SSRF)';
+        thumb.textContent = 'SSRF';
+      }
+    } else {
+      // Local path reference in .md -> auto-match or manual selector
+      const matched = matchImageRefToFile(
+        ref,
+        imageFiles,
+        manualImageMappings,
+        mdEntry?.file.relativePath,
+      );
+
+      if (matched) {
+        resolvedTotal++;
+        matchedImageFiles.add(matched.file);
+        statusBadge.textContent =
+          matched.matchType === 'manual' ? 'ASSOCIÉE MANUELLEMENT' : 'AUTO-RÉSOLUE';
+        const img = document.createElement('img');
+        img.src = bytesToDataUri(matched.file.bytes, matched.file.mime);
+        img.alt = ref.alt || matched.file.name;
+        thumb.appendChild(img);
+      } else {
+        statusBadge.className = 'file-row__status file-row__status--warn';
+        statusBadge.textContent = 'MANQUANTE — À ASSOCIER';
+        thumb.textContent = '?';
+      }
+
+      // Manual association <select> dropdown
+      const select = document.createElement('select');
+      select.className = 'select select--sm';
+      select.setAttribute('aria-label', `Associer une image déposée à ${ref.src}`);
+
+      const autoOpt = document.createElement('option');
+      autoOpt.value = '';
+      const autoMatchWithoutManual = matchImageRefToFile(
+        ref,
+        imageFiles,
+        undefined,
+        mdEntry?.file.relativePath,
+      );
+      autoOpt.textContent = autoMatchWithoutManual
+        ? `Auto (${truncateMiddle(autoMatchWithoutManual.file.relativePath ?? autoMatchWithoutManual.file.name, 26)})`
+        : imageFiles.length > 0
+          ? '— Associer une image déposée —'
+          : '— Déposez une image pour l’associer —';
+      select.appendChild(autoOpt);
+
+      const currentManual = manualImageMappings[ref.src] ?? '';
+      for (const imgFile of imageFiles) {
+        const key = imgFile.relativePath ?? imgFile.name;
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = `${truncateMiddle(key, 28)} (${formatBytes(imgFile.bytes.byteLength)})`;
+        if (currentManual === key) {
+          opt.selected = true;
+        }
+        select.appendChild(opt);
+      }
+
+      select.addEventListener('change', () => {
+        if (select.value) {
+          manualImageMappings[ref.src] = select.value;
+        } else {
+          delete manualImageMappings[ref.src];
+        }
+        renderMarkdownImagesAssociationPanel();
+      });
+
+      controls.appendChild(select);
+    }
+
+    topline.append(pathEl, statusBadge);
+    info.append(topline, captionEl);
+    left.append(thumb, info);
+    row.append(left, controls);
+    mdImagesListEl.appendChild(row);
+  });
+
+  // Also display any deposited image files that are not yet matched to a reference in .md
+  const unmatchedDeposits = imageFiles.filter((f) => !matchedImageFiles.has(f));
+  const localRefs = refs.filter((r) => r.kind === 'local-path');
+
+  for (const imgFile of unmatchedDeposits) {
+    const key = imgFile.relativePath ?? imgFile.name;
+    const row = document.createElement('div');
+    row.className = 'md-image-row';
+    row.role = 'listitem';
+
+    const left = document.createElement('div');
+    left.className = 'md-image-row__left';
+
+    const thumb = document.createElement('div');
+    thumb.className = 'md-image-thumb';
+    const img = document.createElement('img');
+    img.src = bytesToDataUri(imgFile.bytes, imgFile.mime);
+    img.alt = imgFile.name;
+    thumb.appendChild(img);
+
+    const info = document.createElement('div');
+    info.className = 'md-image-row__info';
+
+    const topline = document.createElement('div');
+    topline.className = 'md-image-row__topline';
+
+    const pathEl = document.createElement('code');
+    pathEl.className = 'md-image-row__path';
+    pathEl.title = key;
+    pathEl.textContent = truncateMiddle(key, 34);
+
+    const badge = document.createElement('span');
+    badge.className = 'file-row__status file-row__status--warn';
+    badge.textContent = 'IMAGE DÉPOSÉE NON ASSOCIÉE';
+
+    const captionEl = document.createElement('span');
+    captionEl.className = 'md-image-row__caption';
+    captionEl.textContent = `${imgFile.mime} · ${formatBytes(imgFile.bytes.byteLength)}`;
+
+    topline.append(pathEl, badge);
+    info.append(topline, captionEl);
+    left.append(thumb, info);
+
+    const controls = document.createElement('div');
+    controls.className = 'md-image-row__controls';
+
+    if (localRefs.length > 0) {
+      const bindSelect = document.createElement('select');
+      bindSelect.className = 'select select--sm';
+      bindSelect.setAttribute('aria-label', `Associer le fichier ${key} à une référence du Markdown`);
+
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '— Associer à une balise du .md —';
+      bindSelect.appendChild(placeholder);
+
+      for (const r of localRefs) {
+        const opt = document.createElement('option');
+        opt.value = r.src;
+        opt.textContent = `![${truncateMiddle(r.alt || 'image', 14)}](${truncateMiddle(r.src, 22)})`;
+        bindSelect.appendChild(opt);
+      }
+
+      bindSelect.addEventListener('change', () => {
+        if (bindSelect.value) {
+          manualImageMappings[bindSelect.value] = key;
+          renderMarkdownImagesAssociationPanel();
+        }
+      });
+      controls.appendChild(bindSelect);
+    }
+
+    if (mdEntry) {
+      const insertBtn = document.createElement('button');
+      insertBtn.type = 'button';
+      insertBtn.className = 'btn btn--ghost btn--sm';
+      insertBtn.textContent = '+ Insérer dans le .md';
+      insertBtn.title = `Ajouter ![${stem(imgFile.name)}](${imgFile.name}) à la fin du document Markdown`;
+      insertBtn.addEventListener('click', async () => {
+        const currentMd = new TextDecoder().decode(mdEntry.file.bytes);
+        const defaultCaption = stem(imgFile.name).replace(/[-_]+/g, ' ');
+        const appendedMd = `${currentMd.trimEnd()}\n\n![${defaultCaption}](${imgFile.name})\n`;
+        const newBytes = new TextEncoder().encode(appendedMd);
+        const newSha = await sha256Hex(newBytes);
+        const mdIdx = loadedFiles.indexOf(mdEntry);
+        if (mdIdx !== -1) {
+          loadedFiles[mdIdx] = {
+            file: {
+              ...mdEntry.file,
+              bytes: newBytes,
+            },
+            sha256: newSha,
+          };
+          renderLoadedFileTable();
+        }
+      });
+      controls.appendChild(insertBtn);
+    }
+
+    row.append(left, controls);
+    mdImagesListEl.appendChild(row);
+  }
+
+  mdImagesSummaryBadge.textContent =
+    refs.length > 0
+      ? `${resolvedTotal}/${refs.length} résolue(s) · ${imageFiles.length} fichier(s) image`
+      : `${imageFiles.length} fichier(s) image déposé(s)`;
 }
 
 async function rebuildAllThumbnails(): Promise<void> {
@@ -1044,6 +1408,30 @@ clearFilesBtn.addEventListener('click', (e) => {
   clearLoadedFiles();
 });
 
+// Dedicated "Associer des images au document" Button & Dropzone Events
+associateImagesBtn.addEventListener('click', () => {
+  associateImagesInput.click();
+});
+associateImagesInput.addEventListener('change', () => {
+  if (associateImagesInput.files) void ingestBrowserFiles(associateImagesInput.files);
+  associateImagesInput.value = '';
+});
+['dragenter', 'dragover'].forEach((evt) => {
+  mdImagesPanel.addEventListener(evt, (e) => {
+    e.preventDefault();
+    mdImagesPanel.classList.add('is-dragover');
+  });
+});
+['dragleave', 'drop'].forEach((evt) => {
+  mdImagesPanel.addEventListener(evt, (e) => {
+    e.preventDefault();
+    mdImagesPanel.classList.remove('is-dragover');
+  });
+});
+mdImagesPanel.addEventListener('drop', (e: DragEvent) => {
+  if (e.dataTransfer?.files) void ingestBrowserFiles(e.dataTransfer.files);
+});
+
 // Execute Skill (Worker for local, main thread fetch for remote-ephemeral)
 function runLocalSkillInWorker(
   skillId: string,
@@ -1102,6 +1490,9 @@ async function executeActiveSkill(): Promise<void> {
   }
 
   const rawOptions = formController ? formController.getValues() : {};
+  if (isMarkdownPipeline(activeSkill.id)) {
+    rawOptions.imageMappings = { ...manualImageMappings };
+  }
   if (activeSkill.usesPagePlan && pagePlanItems.length > 0) {
     rawOptions.plan = pagePlanItems.map((p) => ({
       file: p.fileIndex,
@@ -1334,7 +1725,13 @@ function presentOutput(result: RunResult): void {
     iframe.title = 'Aperçu paginé prêt à imprimer en PDF';
     outputPreviewContainer.appendChild(iframe);
 
-    printHtmlBtn.onclick = () => {
+    printHtmlBtn.onclick = async () => {
+      const docImages = Array.from(iframe.contentDocument?.images ?? []);
+      await Promise.all(
+        docImages.map((img) =>
+          typeof img.decode === 'function' ? img.decode().catch(() => undefined) : Promise.resolve(),
+        ),
+      );
       iframe.contentWindow?.focus();
       iframe.contentWindow?.print();
     };

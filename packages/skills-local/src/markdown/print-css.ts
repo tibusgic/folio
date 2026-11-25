@@ -67,7 +67,10 @@ blockquote { margin: 0.4em 0 1em; padding: 0 0 0 11pt; border-left: 0.8pt solid 
 .equation { margin: 0.8em 0; text-align: center; }
 math { font-size: 1.04em; }
 math[display="block"] { display: block math; margin: 0 auto; }
-img { max-width: 100%; }
+img { max-width: 100%; height: auto; break-inside: avoid; page-break-inside: avoid; }
+figure.image-figure { margin: 1.15em auto; text-align: center; break-inside: avoid; page-break-inside: avoid; max-width: 100%; }
+figure.image-figure img { display: block; max-width: 100%; height: auto; max-height: 185mm; margin: 0 auto; break-inside: avoid; page-break-inside: avoid; border-radius: 2px; }
+figure.image-figure figcaption { margin-top: 6pt; font-size: 8.5pt; line-height: 1.4; color: var(--muted); font-style: italic; text-align: center; }
 
 .title-block { margin: 0 0 12mm; padding-bottom: 6mm; border-bottom: 0.6pt solid var(--ink); }
 .title-block h1 { font-size: 25pt; margin: 0 0 3mm; line-height: 1.08; letter-spacing: -0.015em; border: 0; }

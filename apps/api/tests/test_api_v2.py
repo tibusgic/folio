@@ -159,3 +159,89 @@ def test_ocr_endpoint_searchable_pdf_and_markdown() -> None:
     assert md_res.status_code == 200
     assert b"# Extraction OCR" in md_res.content
 
+
+def test_latex_pdf_with_images_zip_and_ssrf_protection() -> None:
+    import zipfile
+    from PIL import Image
+
+    img_buf = io.BytesIO()
+    Image.new("RGB", (120, 80), color=(180, 83, 42)).save(img_buf, format="PNG")
+    png_bytes = img_buf.getvalue()
+
+    webp_buf = io.BytesIO()
+    Image.new("RGB", (120, 80), color=(36, 143, 89)).save(webp_buf, format="WEBP")
+    webp_bytes = webp_buf.getvalue()
+
+    svg_bytes = b'<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="110" height="50"/><text x="10" y="30">Folio SVG</text></svg>'
+
+    tex_with_figures = r"""
+\documentclass[11pt,a4paper]{article}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\title{Mémoire Illustré}
+\begin{document}
+\maketitle
+\section{Figures}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{./images/schema.png}
+  \caption{Schéma PNG associé}
+\end{figure}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{diagram.webp}
+  \caption{Illustration WebP convertie}
+\end{figure}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{vector.svg}
+  \caption{Schéma vectoriel SVG}
+\end{figure}
+\end{document}
+"""
+    res = client.post(
+        "/api/v2/latex-pdf",
+        files=[
+            ("files", ("memoire.md", b"# Memoire\n", "text/markdown")),
+            ("files", ("schema.png", png_bytes, "image/png")),
+            ("files", ("diagram.webp", webp_bytes, "image/webp")),
+            ("files", ("vector.svg", svg_bytes, "image/svg+xml")),
+        ],
+        data={"options": json.dumps({"generatedTex": tex_with_figures, "paper": "a4paper"})},
+    )
+    assert res.status_code == 200
+    assert res.content.startswith(b"%PDF-")
+    reader = PdfReader(io.BytesIO(res.content))
+    assert len(reader.pages) >= 1
+
+    # Test .zip upload directly to /api/v2/latex-pdf
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as zf:
+        zf.writestr("projet/article.md", "# Article ZIP\n\n![Légende ZIP](./images/schema.png)\n")
+        zf.writestr("projet/images/schema.png", png_bytes)
+    zip_res = client.post(
+        "/api/v2/latex-pdf",
+        files=[("files", ("archive.zip", zip_buf.getvalue(), "application/zip"))],
+        data={"options": json.dumps({"paper": "a4paper"})},
+    )
+    assert zip_res.status_code == 200
+    assert zip_res.content.startswith(b"%PDF-")
+
+    # Verify SSRF protection blocks internal / private / metadata URLs in \includegraphics
+    ssrf_tex = r"""
+\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+\includegraphics{http://169.254.169.254/latest/meta-data/iam}
+\end{document}
+"""
+    ssrf_res = client.post(
+        "/api/v2/latex-pdf",
+        files=[("files", ("ssrf.md", b"# Test", "text/markdown"))],
+        data={"options": json.dumps({"generatedTex": ssrf_tex})},
+    )
+    assert ssrf_res.status_code == 400
+    assert ssrf_res.json()["detail"]["code"] == "FORBIDDEN_CONTENT"
+
+

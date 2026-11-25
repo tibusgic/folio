@@ -6,3 +6,4 @@ export * from './hash.ts';
 export * from './registry.ts';
 export * from './runner.ts';
 export * from './pages.ts';
+export * from './markdown-images.ts';

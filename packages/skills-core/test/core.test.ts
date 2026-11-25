@@ -1,16 +1,24 @@
 import { describe, expect, it } from 'vitest';
+import { zipSync } from 'fflate';
 import { z } from 'zod';
 import {
+  clearRemoteImageCache,
   defineSkill,
+  extractMarkdownImageRefs,
+  fetchRemoteImageSafe,
+  getRemoteImageCacheSize,
+  isSafeRemoteImageUrl,
   MIME,
   parsePageRanges,
   parsePageSelection,
+  resolveMarkdownImages,
   runSkill,
   sanitizeFileName,
   sha256Hex,
   SkillError,
   SkillRegistry,
   sniffMime,
+  uint8ToBase64,
 } from '../src/index.ts';
 
 describe('@folio/skills-core', () => {
@@ -73,5 +81,107 @@ describe('@folio/skills-core', () => {
     expect(result.record.inputs[0]?.sha256).toBe(expectedSha);
     expect(result.record.outputs[0]?.sha256).toBe(expectedSha);
     expect(result.record.report).toEqual({ echoed: 'audit' });
+  });
+
+  it('sniffs WebP, SVG and ZIP magic bytes and resolves all 4 Markdown image sources', async () => {
+    // 1x1 PNG
+    const pngBytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+      0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x60, 0x60, 0x60,
+      0x00, 0x00, 0x00, 0x05, 0x00, 0x01, 0x87, 0xa1, 0x4e, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+      0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]);
+    // WebP magic bytes: RIFF....WEBP
+    const webpBytes = new Uint8Array([
+      0x52, 0x49, 0x46, 0x46, 0x14, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20,
+    ]);
+    // SVG with malicious script that must be sanitized
+    const svgBytes = new TextEncoder().encode(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><script>alert(1)</script><rect width="100" height="50"/></svg>',
+    );
+
+    expect(sniffMime(webpBytes, 'photo.webp')).toBe(MIME.webp);
+    expect(sniffMime(svgBytes, 'diagram.svg')).toBe(MIME.svg);
+
+    const b64Png = uint8ToBase64(pngBytes);
+    const mdContent = [
+      '# Document Illustré',
+      '',
+      '![Schéma par chemin relatif](./images/schema.png)',
+      '',
+      '![Diagramme associé manuellement](expected-name.svg)',
+      '',
+      `![Icône Base64](data:image/png;base64,${b64Png})`,
+      '',
+      '![Graphique distant](https://cdn.example.com/chart.png)',
+    ].join('\n');
+
+    const refs = extractMarkdownImageRefs(mdContent);
+    expect(refs).toHaveLength(4);
+    expect(refs.map((r) => r.kind)).toEqual(['local-path', 'local-path', 'data-uri', 'remote-url']);
+
+    // Pack .md + images/schema.png inside a .zip archive
+    const zipped = zipSync({
+      'dossier/rapport.md': new TextEncoder().encode(mdContent),
+      'dossier/images/schema.png': pngBytes,
+    });
+    expect(sniffMime(zipped, 'bundle.zip')).toBe(MIME.zip);
+
+    clearRemoteImageCache();
+    let fetchCalls = 0;
+    const mockFetcher: typeof fetch = async () => {
+      fetchCalls++;
+      return new Response(pngBytes, {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      });
+    };
+
+    const resolved = await resolveMarkdownImages(
+      [
+        { name: 'bundle.zip', mime: MIME.zip, bytes: zipped },
+        { name: 'custom-uploaded.svg', mime: MIME.svg, bytes: svgBytes },
+      ],
+      {
+        imageMappings: { 'expected-name.svg': 'custom-uploaded.svg' },
+        fetcher: mockFetcher,
+      },
+    );
+
+    expect(resolved.stats.totalImages).toBe(4);
+    expect(resolved.stats.resolvedImages).toBe(4);
+    expect(resolved.stats.missingImages).toBe(0);
+    expect(resolved.stats.bySource).toEqual({
+      local: 1,
+      zip: 1,
+      dataUri: 1,
+      remote: 1,
+    });
+    expect(fetchCalls).toBe(1);
+    expect(getRemoteImageCacheSize()).toBe(1);
+
+    // Second fetch to the same URL hits the in-memory cache without network call
+    const cachedHit = await fetchRemoteImageSafe('https://cdn.example.com/chart.png', 2, {
+      fetcher: mockFetcher,
+    });
+    expect(cachedHit.ok).toBe(true);
+    if (cachedHit.ok) {
+      expect(cachedHit.fromCache).toBe(true);
+    }
+    expect(fetchCalls).toBe(1);
+
+    // Sanitized SVG Data URI must not contain <script>
+    const svgRes = resolved.resolutions.get('expected-name.svg');
+    expect(svgRes?.resolved).toBe(true);
+    expect(new TextDecoder().decode(svgRes!.bytes!)).not.toContain('<script>');
+
+    // SSRF Guard blocks localhost, RFC1918 and cloud metadata IPs
+    expect(isSafeRemoteImageUrl('http://127.0.0.1/admin.png').safe).toBe(false);
+    expect(isSafeRemoteImageUrl('http://169.254.169.254/latest/meta-data/').safe).toBe(false);
+    expect(isSafeRemoteImageUrl('http://192.168.1.10/secret.png').safe).toBe(false);
+    expect(isSafeRemoteImageUrl('http://localhost:8080/test.png').safe).toBe(false);
+    expect(isSafeRemoteImageUrl('file:///etc/passwd').safe).toBe(false);
+    expect(isSafeRemoteImageUrl('https://assets.example.org/fig1.png').safe).toBe(true);
   });
 });

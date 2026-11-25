@@ -863,6 +863,130 @@ html[data-mode="quick"] .enterprise-only {
   flex-shrink: 0;
 }
 
+.file-row__status--warn {
+  color: var(--accent-amber);
+  background: var(--accent-amber-bg);
+}
+
+/* Markdown Image Association Panel */
+.md-images-panel {
+  margin-top: 12px;
+}
+
+.md-images-panel.is-dragover {
+  border-color: var(--accent-terracotta);
+  background: var(--bg-elevated);
+}
+
+.md-images-drop-banner {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--ink-secondary);
+  background: var(--bg-canvas);
+  border-bottom: 1px solid var(--rule-hairline);
+}
+
+.md-images-drop-banner code {
+  color: var(--ink-primary);
+  font-size: 11px;
+}
+
+.md-images-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.md-image-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule-hairline);
+  font-size: 12.5px;
+  flex-wrap: wrap;
+}
+
+.md-image-row:last-child {
+  border-bottom: 0;
+}
+
+.md-image-row__left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.md-image-thumb {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--rule-hairline);
+  background: var(--bg-canvas);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-muted);
+}
+
+.md-image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.md-image-row__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.md-image-row__topline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.md-image-row__path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-image-row__caption {
+  font-size: 11.5px;
+  color: var(--ink-secondary);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-image-row__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.md-image-empty {
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
 .file-row__meta {
   display: contents;
 }
